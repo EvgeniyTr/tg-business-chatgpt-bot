@@ -1,20 +1,22 @@
+import os
+import logging
+import asyncio
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-import logging
-import openai
-import asyncio
+
+from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Конфиг с переменными окружения
+# Конфигурация из переменных окружения
 class Settings(BaseSettings):
     TELEGRAM_TOKEN: SecretStr
     OPENAI_KEY: SecretStr
@@ -25,19 +27,19 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
-openai.api_key = settings.OPENAI_KEY.get_secret_value()
 
-# Инициализация бота и диспетчера
+# Инициализация клиентов
 bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
+openai_client = AsyncOpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
 
-# Обработка всех входящих сообщений
+# Обработка входящих сообщений
 @dp.message()
 async def handle_message(message: Message):
     logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o",
             messages=[
                 {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
                 {"role": "user", "content": message.text}
@@ -45,26 +47,27 @@ async def handle_message(message: Message):
         )
         reply = response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Ошибка OpenAI: {e}")
+        logger.exception("Ошибка OpenAI:")
         reply = "Произошла ошибка при обработке запроса. Попробуйте позже."
 
     await message.answer(reply)
 
-# Создание aiohttp-приложения с webhook
+# Webhook lifecycle
 async def on_startup(app: web.Application):
-    await bot.set_webhook(settings.WEBHOOK_URL)
+    await bot.set_webhook(f"{settings.WEBHOOK_URL}/webhook")
 
 async def on_shutdown(app: web.Application):
     await bot.delete_webhook()
     await bot.session.close()
 
+# Запуск приложения
 async def main():
     app = web.Application()
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    app.router.add_route("POST", "/webhook", webhook_handler.handle)
+    app.router.add_route("POST", "/webhook", webhook_handler.handler)
 
     setup_application(app, dp, bot=bot)
 
