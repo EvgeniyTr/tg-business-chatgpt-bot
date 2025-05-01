@@ -2,54 +2,57 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 import logging
 import openai
-import os
 import asyncio
+from pydantic_settings import BaseSettings
+from pydantic import SecretStr
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Ключи и конфиг
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_KEY")
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_HOST = os.getenv("WEBHOOK_URL")
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-PORT = int(os.getenv("PORT", 8080))
+# Конфиг с переменными окружения
+class Settings(BaseSettings):
+    TELEGRAM_TOKEN: SecretStr
+    OPENAI_KEY: SecretStr
+    WEBHOOK_URL: str
+    PORT: int = 8080
 
-openai.api_key = OPENAI_KEY
+    class Config:
+        env_file = ".env"
 
-# Бот и диспетчер
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+settings = Settings()
+openai.api_key = settings.OPENAI_KEY.get_secret_value()
+
+# Инициализация бота и диспетчера
+bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Обработчики
+# Обработка всех входящих сообщений
 @dp.message()
-async def echo_message(message: Message):
+async def handle_message(message: Message):
+    logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        logger.info(f"User: {message.from_user.username} | Text: {message.text}")
-
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Ты полезный помощник"},
-                {"role": "user", "content": message.text},
+                {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
+                {"role": "user", "content": message.text}
             ]
         )
-        answer = response.choices[0].message.content
+        reply = response.choices[0].message.content
     except Exception as e:
-        logger.error(f"OpenAI error: {e}")
-        answer = "Ошибка. Я не могу ответить сейчас."
+        logger.error(f"Ошибка OpenAI: {e}")
+        reply = "Произошла ошибка при обработке запроса. Попробуйте позже."
 
-    await message.answer(answer)
+    await message.answer(reply)
 
-# Приложение aiohttp
+# Создание aiohttp-приложения с webhook
 async def on_startup(app: web.Application):
-    await bot.set_webhook(WEBHOOK_URL)
+    await bot.set_webhook(f"{settings.WEBHOOK_URL}/webhook")
 
 async def on_shutdown(app: web.Application):
     await bot.delete_webhook()
@@ -57,18 +60,20 @@ async def on_shutdown(app: web.Application):
 
 async def main():
     app = web.Application()
-    app.router.add_routes([
-    web.post(WEBHOOK_PATH, SimpleRequestHandler(dispatcher=dp, bot=bot).handler)
-])
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
+    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
+    app.router.add_route("POST", "/webhook", webhook_handler.handle)
+
+    setup_application(app, dp, bot=bot)
+
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    site = web.TCPSite(runner, host="0.0.0.0", port=settings.PORT)
     await site.start()
 
-    logger.info("Bot is up and running via webhook!")
+    logger.info("Webhook сервер запущен...")
     while True:
         await asyncio.sleep(3600)
 
