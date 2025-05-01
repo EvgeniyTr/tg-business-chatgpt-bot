@@ -1,65 +1,18 @@
-# Telegram GPT Auto-Reply Bot (Business-ready)
+# Telegram ChatGPT Business Bot
 
-Автоматический Telegram-бот с интеграцией OpenAI GPT-3.5 и поддержкой Webhook для Telegram Business аккаунтов.
+Telegram-бот с подключением к OpenAI (GPT-3.5 Turbo), настроенный на webhook (Render), совместим с Telegram Business режимом.
 
-## 🚀 Возможности
-- Принимает входящие сообщения как автоответчик
-- Поддерживает Telegram Business режим
-- Работает через Webhook (aiohttp)
-- Генерирует ответы с помощью OpenAI
+## ⚙️ Возможности
+- Поддержка Telegram Business режима
+- Асинхронный webhook через `aiohttp`
+- AI-ответы от OpenAI ChatGPT (gpt-3.5-turbo)
+- Развертывание через Render
 
 ---
 
-## 📁 Установка и запуск
+## 📦 Установка
 
-### 1. Клонируй репозиторий и установи зависимости
+### 1. Клонируйте репозиторий:
 ```bash
-pip install -r requirements.txt
-```
-
-### 2. Создай файл `.env` (можно скопировать из `.env.example`)
-```env
-TELEGRAM_TOKEN=your_bot_token
-OPENAI_KEY=your_openai_api_key
-WEBHOOK_URL=https://your-app-name.onrender.com
-PORT=8080
-```
-
-### 3. Запусти бота
-```bash
-python bot.py
-```
-
----
-
-## 🌐 Деплой на Render
-
-### 🔧 Settings:
-- **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `python bot.py`
-- **Environment Variables**:
-  - `TELEGRAM_TOKEN`
-  - `OPENAI_KEY`
-  - `WEBHOOK_URL`
-  - `PORT` *(обычно 10000 в Render)*
-
-После деплоя — не забудь вручную установить Webhook:
-
-```bash
-https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook?url=https://your-app-name.onrender.com/webhook
-```
-
----
-
-## 💬 Поддержка моделей
-- GPT-3.5-turbo
-- Поддержка других моделей доступна при необходимости через OpenAI API
-
-## 🧠 Используемые технологии
-- `aiogram 3`
-- `aiohttp`
-- `openai`
-
----
-
-**Автор:** @kozhariks
+git clone https://github.com/ваш-профиль/telegram-chatgpt-bot.git
+cd telegram-chatgpt-bot
