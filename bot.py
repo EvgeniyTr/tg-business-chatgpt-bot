@@ -33,6 +33,6 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 # Запуск Webhook-сервера (без flask)
 app.run_webhook(
     listen="0.0.0.0",
-    port=int(os.environ.get("PORT", 8443)),
+    port=PORT,
     webhook_url=os.environ.get("WEBHOOK_URL")
 )
