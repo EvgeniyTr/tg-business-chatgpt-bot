@@ -67,7 +67,7 @@ async def main():
     app.on_shutdown.append(on_shutdown)
 
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    app.router.add_route("POST", "/webhook", webhook_handler.handler)
+    app.router.add_route("POST", "/webhook", webhook_handler.handle)
 
     setup_application(app, dp, bot=bot)
 
