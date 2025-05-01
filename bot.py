@@ -1,70 +1,73 @@
-import os
+from aiogram import Bot, Dispatcher, types
+from aiogram.enums import ParseMode
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
+from aiohttp import web
 import logging
-from flask import Flask, request
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-)
-from openai import OpenAI
+import openai
+import os
 import asyncio
 
 # Логирование
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Переменные среды
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+# Ключи и конфиг
+BOT_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_KEY = os.getenv("OPENAI_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.environ.get("PORT", 8443))
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_HOST = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+PORT = int(os.getenv("PORT", 8080))
 
-# Telegram App + OpenAI клиент
-application = ApplicationBuilder().token(TOKEN).build()
-client = OpenAI(api_key=OPENAI_KEY)
+openai.api_key = OPENAI_KEY
 
-# Обработка команды /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот. Задай мне вопрос.")
+# Бот и диспетчер
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher(storage=MemoryStorage())
 
-# Обработка текста
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
+# Обработчики
+@dp.message()
+async def echo_message(message: Message):
     try:
-        response = client.chat.completions.create(
+        logger.info(f"User: {message.from_user.username} | Text: {message.text}")
+
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "Отвечай кратко и по делу."},
-                {"role": "user", "content": user_text}
+                {"role": "system", "content": "Ты полезный помощник"},
+                {"role": "user", "content": message.text},
             ]
         )
-        reply = response.choices[0].message.content.strip()
-        await update.message.reply_text(reply)
+        answer = response.choices[0].message.content
     except Exception as e:
-        await update.message.reply_text("Ошибка при обращении к OpenAI!")
+        logger.error(f"OpenAI error: {e}")
+        answer = "Ошибка. Я не могу ответить сейчас."
 
-# Регистрируем handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    await message.answer(answer)
 
-# Flask сервер для webhook
-flask_app = Flask(__name__)
+# Приложение aiohttp
+async def on_startup(app: web.Application):
+    await bot.set_webhook(WEBHOOK_URL)
 
-@flask_app.route("/webhook", methods=["POST"])
-async def webhook():
-    if request.method == "POST":
-        await application.update_queue.put(Update.de_json(request.get_json(force=True), application.bot))
-        return "OK", 200
+async def on_shutdown(app: web.Application):
+    await bot.delete_webhook()
+    await bot.session.close()
 
-async def run():
-    await application.initialize()
-    await application.start()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    await application.updater.start_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path="webhook",
-        webhook_url=WEBHOOK_URL,
-    )
-    await application.updater.idle()
+async def main():
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, dp.as_handler())
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+
+    logger.info("Bot is up and running via webhook!")
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(main())
