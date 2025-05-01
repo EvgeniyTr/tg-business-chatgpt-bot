@@ -1,14 +1,15 @@
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BusinessMessage
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.types import Message
 from aiohttp import web
 import logging
 import openai
 import asyncio
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
+from aiogram.client.bot import DefaultBotProperties
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -28,17 +29,18 @@ settings = Settings()
 openai.api_key = settings.OPENAI_KEY.get_secret_value()
 
 # Инициализация бота и диспетчера
-bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
-dp = Dispatcher(storage=MemoryStorage())
+bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# Обработка business_message
+# Обработка всех входящих сообщений
 @router.message()
-async def handle_business_message(message: BusinessMessage):
-    logger.info(f"[Business] From {message.from_user.id}: {message.text}")
+async def handle_message(message: Message):
+    logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        response = openai.ChatCompletion.create(
+        response = await openai.ChatCompletion.acreate(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
@@ -66,7 +68,7 @@ async def main():
     app.on_shutdown.append(on_shutdown)
 
     webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    app.router.add_route("POST", "/webhook", webhook_handler.handle)
+    app.router.add_route("POST", "/webhook", webhook_handler.handler)
 
     setup_application(app, dp, bot=bot)
 
