@@ -14,5 +14,5 @@ Telegram-бот с подключением к OpenAI (GPT-3.5 Turbo), наст�
 
 ### 1. Клонируйте репозиторий:
 ```bash
-git clone https://github.com/ваш-профиль/telegram-chatgpt-bot.git
+git clone https://github.com/kozhariks/telegram-chatgpt-bot.git
 cd telegram-chatgpt-bot
