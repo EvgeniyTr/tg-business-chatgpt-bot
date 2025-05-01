@@ -2,6 +2,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiohttp import web
 import logging
 import openai
@@ -56,7 +57,9 @@ async def on_shutdown(app: web.Application):
 
 async def main():
     app = web.Application()
-    app.router.add_post(WEBHOOK_PATH, dp.as_handler())
+    app.router.add_routes([
+    web.post(WEBHOOK_PATH, SimpleRequestHandler(dispatcher=dp, bot=bot).handler)
+])
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
