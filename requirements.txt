@@ -1,5 +1,5 @@
 aiogram==3.4.1
 pydantic==1.10.13
-pydantic-settings==0.4.2
+pydantic-settings==0.2.1
 openai
 aiohttp
