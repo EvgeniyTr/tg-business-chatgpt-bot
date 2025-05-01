@@ -52,7 +52,7 @@ async def handle_message(message: Message):
 
 # Создание aiohttp-приложения с webhook
 async def on_startup(app: web.Application):
-    await bot.set_webhook(f"{settings.WEBHOOK_URL}/webhook")
+    await bot.set_webhook(settings.WEBHOOK_URL)
 
 async def on_shutdown(app: web.Application):
     await bot.delete_webhook()
