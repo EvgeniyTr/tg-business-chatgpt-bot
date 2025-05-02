@@ -1,18 +1,9 @@
-# Telegram ChatGPT Business Bot
+# Telegram GPT-4 Business Bot
 
-Telegram-бот с подключением к OpenAI (GPT-3.5 Turbo), настроенный на webhook (Render), совместим с Telegram Business режимом.
+Бот для автоматизации ответов в Telegram Business с использованием GPT-4.
 
-## ⚙️ Возможности
-- Поддержка Telegram Business режима
-- Асинхронный webhook через `aiohttp`
-- AI-ответы от OpenAI ChatGPT (gpt-3.5-turbo)
-- Развертывание через Render
+## Настройка
 
----
-
-## 📦 Установка
-
-### 1. Клонируйте репозиторий:
-```bash
-git clone https://github.com/kozhariks/telegram-chatgpt-bot.git
-cd telegram-chatgpt-bot
+1. Склонируйте репозиторий:
+   ```bash
+   git clone https://github.com/ваш-репозиторий.git
