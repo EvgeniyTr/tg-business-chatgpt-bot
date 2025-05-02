@@ -41,6 +41,8 @@ class BotManager:
         self.initialized = threading.Event()
         self.openai_client = None
         self.chat_history = defaultdict(list)
+        self.init_timeout = 120  # Добавляем недостающий атрибут
+        self.start_time = None
         
         self.owner_info = {
             "owner_name": "Сергей ",
@@ -170,7 +172,7 @@ class BotManager:
     def process_update(self, json_data):
         """Обработка обновления"""
         if not self.initialized.wait(timeout=self.init_timeout):
-            raise RuntimeError("Таймаут инициализации")
+        raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
         
         future = asyncio.run_coroutine_threadsafe(
             self._process_update(json_data),
