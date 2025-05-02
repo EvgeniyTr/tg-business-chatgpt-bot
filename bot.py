@@ -27,6 +27,8 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+
+# Настройка OpenAI API-ключа
 openai.api_key = settings.OPENAI_KEY.get_secret_value()
 
 # Инициализация бота и диспетчера
