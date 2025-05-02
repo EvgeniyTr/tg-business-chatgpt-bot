@@ -1,69 +1,59 @@
-# bot.py
+# src/bot.py
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from pydantic_settings import BaseSettings
-from pydantic import SecretStr
+from openai import OpenAI
 import logging
 import asyncio
-from openai import AsyncOpenAI
-from typing import Optional
+from pydantic_settings import BaseSettings
+from pydantic import SecretStr
 
-# Настройка логирования
+# Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Конфигурация
+# Settings
 class Settings(BaseSettings):
     TELEGRAM_TOKEN: SecretStr
     OPENAI_KEY: SecretStr
     WEBHOOK_URL: str
     PORT: int = 8080
+
     class Config:
         env_file = ".env"
 
 settings = Settings()
 
-# Telegram Bot init
+# Bot
 bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# OpenAI клиент (GPT-4o)
-client = AsyncOpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
-
-# Обработка нестандартного business_message
-types.BusinessMessage = types.TelegramObject.build_class({
-    'message_id': int,
-    'from_': types.User,
-    'chat': types.Chat,
-    'date': int,
-    'text': Optional[str]
-}, name='BusinessMessage')
-
-@router.update(types.BusinessMessage)
-async def handle_business_message(message: types.TelegramObject):
-    logger.info(f"Business msg from {message.from_.id}: {message.text}")
+# Message handler
+@router.message()
+async def handle_message(message: Message):
+    logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        completion = await client.chat.completions.create(
+        client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Ты AI-бот поддержки клиентов."},
+                {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
                 {"role": "user", "content": message.text}
             ]
         )
-        reply = completion.choices[0].message.content
+        reply = response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Ошибка OpenAI: {e}")
-        reply = "Произошла ошибка при обработке запроса."
+        logger.error(f"OpenAI error: {e}")
+        reply = "Произошла ошибка при обработке запроса. Попробуйте позже."
+    await message.answer(reply)
 
-    await bot.send_message(chat_id=message.chat.id, text=reply)
-
-# Webhook
+# Webhook setup
 async def on_startup(app: web.Application):
     await bot.set_webhook(f"{settings.WEBHOOK_URL}/webhook")
 
@@ -76,9 +66,7 @@ async def main():
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
-    webhook_handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
-    app.router.add_route("POST", "/webhook", webhook_handler.handle)
-
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
     setup_application(app, dp, bot=bot)
 
     runner = web.AppRunner(app)
