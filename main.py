@@ -1,28 +1,36 @@
 import os
 import logging
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
-from config import Config
-from app.handlers import handle_message
+from flask import Flask, request
 
-# Настройка логов
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+app = Flask(__name__)
 
-def main():
-    app = ApplicationBuilder().token(Config.TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+# Настройка Telegram бота
+def setup_telegram_bot():
+    telegram_app = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+    
+    async def handle_message(update, context):
+        await update.message.reply_text("Привет! Я работаю!")
+    
+    telegram_app.add_handler(MessageHandler(filters.TEXT, handle_message))
+    return telegram_app
 
-    # Для Render: используем вебхук или polling
-    if "RENDER" in os.environ:
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=int(os.environ.get("PORT", 5000)),
-            webhook_url=os.environ.get("WEBHOOK_URL")
-        )
-    else:
-        app.run_polling()
+# Для работы на Render
+@app.route('/')
+def home():
+    return "Бот работает!"
 
 if __name__ == '__main__':
-    main()
+    # Режим для Render
+    if "RENDER" in os.environ:
+        telegram_app = setup_telegram_bot()
+        telegram_app.run_webhook(
+            listen="0.0.0.0",
+            port=int(os.getenv("PORT", 5000)),
+            webhook_url=os.getenv("WEBHOOK_URL")
+        )
+        app.run(host='0.0.0.0', port=os.getenv("PORT", 5000))
+    else:
+        # Локальный режим
+        telegram_app = setup_telegram_bot()
+        telegram_app.run_polling()
