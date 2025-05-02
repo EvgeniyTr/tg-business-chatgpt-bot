@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
-from telegram.constants import ChatType, UpdateType
 from flask import Flask, request, jsonify
 import openai
 
@@ -82,46 +81,21 @@ class BotManager:
             self._handle_text
         ))
         self.application.add_handler(MessageHandler(
-            filters.TEXT & 
-            filters.ChatType.PRIVATE & 
-            filters.UpdateType.BUSINESS_MESSAGES,
+            self._business_message_filter(),
             self._handle_business_text
         ))
-
-        def _business_message_filter(self):
-        """Кастомный фильтр для бизнес-сообщений"""
-        def filter_func(update: Update):
-            # Проверяем наличие бизнес-коннекшена в сообщении
-            if update.message and update.message.business_connection_id:
-                return True
-            return False
-            
-        return filters.UpdateType.MESSAGE & filters.create(filter_func)
-
-    async def _handle_business_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик бизнес-сообщений"""
-        try:
-            await self._log_incoming_message(update)
-            
-            if not update.message or not update.message.text:
-                return
-
-            user_id = update.effective_user.id
-            text = update.message.text.strip()
-            logger.info(f"Business message from {user_id}: {text}")
-
-            # Общая логика обработки
-            await self._process_common_message(update, context, is_business=True)
-
-        except Exception as e:
-            logger.error(f"Business message error: {str(e)}", exc_info=True)
-            
         self.application.add_error_handler(self._error_handler)
         
         await self.application.initialize()
         
         if "RENDER" in os.environ:
             await self._setup_webhook()
+
+    def _business_message_filter(self):
+        """Кастомный фильтр для бизнес-сообщений"""
+        def filter_func(update: Update):
+            return bool(update.message and update.message.business_connection_id)
+        return filters.UpdateType.MESSAGE & filters.create(filter_func)
 
     async def _log_incoming_message(self, update: Update):
         """Логирование входящих сообщений"""
@@ -130,7 +104,7 @@ class BotManager:
                 "update_id": update.update_id,
                 "message_id": update.message.message_id if update.message else None,
                 "date": update.message.date.isoformat() if update.message and update.message.date else None,
-                "chat_type": update.effective_chat.type if update.effective_chat else None,
+                "chat_type": "business" if update.message and update.message.business_connection_id else "regular",
                 "chat_id": update.effective_chat.id if update.effective_chat else None,
                 "user_id": update.effective_user.id if update.effective_user else None,
                 "content_type": "voice" if update.message and update.message.voice else "text",
@@ -287,7 +261,7 @@ class BotManager:
             self._process_update(json_data),
             self.loop
         )
-        return future.result(timeout=30)  # Увеличенный таймаут
+        return future.result(timeout=30)
 
     async def _process_update(self, json_data):
         try:
