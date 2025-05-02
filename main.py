@@ -60,7 +60,22 @@ class BotManager:
             "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
             "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
         }
+    def process_update(self, json_data):
+        """Обработка входящего обновления через вебхук"""
+        if not self.initialized.wait(timeout=10):
+            raise RuntimeError("Таймаут инициализации бота")
+        
+        future = asyncio.run_coroutine_threadsafe(
+            self._process_update(json_data),
+            self.loop
+        )
+        return future.result(timeout=15)
 
+    async def _process_update(self, json_data):
+        """Асинхронная обработка обновления"""
+        update = Update.de_json(json_data, self.application.bot)
+        await self.application.process_update(update)
+        
     def start(self):
         def run_loop():
             self.loop = asyncio.new_event_loop()
