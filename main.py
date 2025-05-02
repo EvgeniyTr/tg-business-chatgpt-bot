@@ -1,56 +1,62 @@
 import os
 import asyncio
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 from flask import Flask, request, jsonify
 
+# Инициализация Flask
 app = Flask(__name__)
-bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
 
-# Создаем Application один раз при запуске
-application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+# Глобальная переменная для Application
+application = None
 
-# Обработчик сообщений
-async def handle_message(update: Update, context):
-    await update.message.reply_text("✅ Бот работает корректно!")
-
-# Добавляем обработчик
-application.add_handler(MessageHandler(filters.TEXT, handle_message))
+async def initialize_bot():
+    global application
+    application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+    
+    # Обработчик сообщений
+    async def handle_message(update: Update, context):
+        await update.message.reply_text("✅ Бот работает корректно!")
+    
+    application.add_handler(MessageHandler(filters.TEXT, handle_message))
+    
+    # Инициализация приложения
+    await application.initialize()
+    
+    # Установка вебхука
+    if "RENDER" in os.environ:
+        await application.bot.set_webhook(
+            url=os.getenv("WEBHOOK_URL") + '/webhook'
+        )
 
 # Синхронная обертка для обработки вебхука
 @app.route('/webhook', methods=['POST'])
 def webhook():
     json_data = request.get_json()
-    update = Update.de_json(json_data, bot)
+    update = Update.de_json(json_data, application.bot)
     
-    # Запускаем асинхронную обработку в event loop
+    # Запускаем асинхронную обработку
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(application.process_update(update))
-    loop.close()
-    
-    return jsonify({"status": "ok"})
+    try:
+        loop.run_until_complete(application.process_update(update))
+        return jsonify({"status": "ok"})
+    finally:
+        loop.close()
 
-# Главная страница
 @app.route('/')
 def home():
     return "Telegram Bot is running on Render!"
 
-# Асинхронная настройка вебхука
-async def set_webhook_async():
-    await bot.set_webhook(url=os.getenv("WEBHOOK_URL") + '/webhook')
-
 if __name__ == '__main__':
-    # Настройка для Render
+    # Инициализация бота
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(initialize_bot())
+    
+    # Запуск production-сервера
     if "RENDER" in os.environ:
-        # Устанавливаем вебхук
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(set_webhook_async())
-        loop.close()
-        
-        # Запускаем Flask сервер
-        app.run(host='0.0.0.0', port=os.getenv("PORT", 10000))
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=10000)
     else:
-        # Локальный режим с polling
-        application.run_polling()
+        app.run(host='0.0.0.0', port=5000)
