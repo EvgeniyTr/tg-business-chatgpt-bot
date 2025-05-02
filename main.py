@@ -170,15 +170,16 @@ class BotManager:
         logger.info(f"Вебхук настроен: {webhook_url}")
 
     def process_update(self, json_data):
-        """Обработка обновления"""
-        if not self.initialized.wait(timeout=self.init_timeout):
-            raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
-        
-        future = asyncio.run_coroutine_threadsafe(
-            self._process_update(json_data),
-            self.loop
-        )
-        return future.result(timeout=15)
+    """Обработка обновления"""
+    if not self.initialized.wait(timeout=self.init_timeout):
+        # Добавлен отступ перед raise
+        raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
+    
+    future = asyncio.run_coroutine_threadsafe(
+        self._process_update(json_data),
+        self.loop
+    )
+    return future.result(timeout=15)
 
     async def _process_update(self, json_data):
         """Асинхронная обработка"""
