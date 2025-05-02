@@ -5,7 +5,7 @@ from aiogram.types import Message
 from aiohttp import web
 import logging
 import asyncio
-import openai  # правильный импорт
+import openai
 
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
@@ -27,8 +27,6 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
-
-# Настройка OpenAI API-KEY
 openai.api_key = settings.OPENAI_KEY.get_secret_value()
 
 # Инициализация бота и диспетчера
@@ -43,7 +41,7 @@ dp.include_router(router)
 async def handle_message(message: Message):
     logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        response = openai.ChatCompletion.create(
+        response = openai.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
