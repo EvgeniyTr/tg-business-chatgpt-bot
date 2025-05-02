@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 pydantic-settings==2.1.0
 flask
 python-telegram-bot[webhooks]>=20.0
+waitress>=2.1.0
