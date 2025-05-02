@@ -1,6 +1,3 @@
 python-telegram-bot[webhook]==20.3
-openai>=1.0.0
-python-dotenv
 flask>=2.0.0
-pytelegrambotapi>=4.0.0
-aiohttp>=3.8.0
+waitress>=2.1.0
