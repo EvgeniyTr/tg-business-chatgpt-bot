@@ -1,8 +1,4 @@
-aiohttp
-aiogram==3.4.1
-openai>=1.0.0
-python-dotenv==1.0.1
-pydantic-settings==2.1.0
-flask
-python-telegram-bot[webhooks]>=20.3
-waitress>=2.1.0
+python-telegram-bot==20.5
+openai>=1.0
+Flask==3.0.2
+waitress==3.0.0
