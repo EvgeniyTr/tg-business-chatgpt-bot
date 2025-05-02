@@ -156,7 +156,7 @@ class BotManager:
 
 # Инициализация бота при старте приложения
 bot_manager = BotManager()
-bot_manager.start()
+#bot_manager.start()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
