@@ -77,7 +77,7 @@ class BotManager:
         self.application.add_handler(CommandHandler("generate_image", self._generate_image))
         self.application.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
         self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL,
+            filters.TEXT & ~filters.COMMAND,
             self._handle_text
         ))
         self.application.add_handler(MessageHandler(
@@ -92,10 +92,12 @@ class BotManager:
             await self._setup_webhook()
 
     def _business_message_filter(self):
-        """Кастомный фильтр для бизнес-сообщений"""
-        def filter_func(update: Update):
-            return bool(update.message and update.message.business_connection_id)
-        return filters.UpdateType.MESSAGE & filters.create(filter_func)
+        """Фильтр для бизнес-сообщений"""
+        return (
+            filters.UpdateType.MESSAGE &
+            filters.Message(filters.TEXT) &
+            filters.Lambda(lambda upd: bool(upd.message.business_connection_id)
+        )
 
     async def _log_incoming_message(self, update: Update):
         """Логирование входящих сообщений"""
