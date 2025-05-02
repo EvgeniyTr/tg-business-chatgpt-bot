@@ -1,8 +1,9 @@
 import os
 import asyncio
 import logging
+import threading
 from collections import defaultdict
-from typing import Dict, List
+from concurrent.futures import ThreadPoolExecutor
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from flask import Flask, request, jsonify
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Конфигурация
-MAX_HISTORY = 3  # Храним 3 последних сообщения
+MAX_HISTORY = 3
 SYSTEM_PROMPT = """
 Ты - это я, {owner_name}. Отвечай от моего имени, используя мой стиль общения.
 Основные характеристики:
@@ -26,75 +27,72 @@ SYSTEM_PROMPT = """
 - {owner_details}
 
 Всегда придерживайся этих правил:
-1. Отвечай только от моего лица (используй "я", "мне" и т.д.)
+1. Отвечай только от моего лица
 2. Сохраняй мой стиль общения
-3. Будь естественным, как будто это действительно я отвечаю
+3. Будь естественным
 """
 
 class BotManager:
     def __init__(self):
-        # ... (предыдущий код инициализации)
-        self.chat_history: Dict[int, List[Dict]] = defaultdict(list)
+        self.loop = asyncio.new_event_loop()
+        self.application = None
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.initialized = threading.Event()
+        self.openai_client = None
+        self.chat_history = defaultdict(list)
+        self.init_timeout = 120
+        self.start_time = None
+        
         self.owner_info = {
-                "owner_name": "Сергей Кажарнович",
+            "owner_name": "Сергей Кажарнович",
     "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
     "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
         }
 
-    async def _get_gpt_response(self, user_id: int, message: str) -> str:
-        """Генерация ответа с учетом контекста"""
-        try:
-            # Получаем историю сообщений
-            history = self.chat_history.get(user_id, [])
-            
-            # Формируем промпт
-            messages = [
-                {
-                    "role": "system", 
-                    "content": SYSTEM_PROMPT.format(**self.owner_info)
-                }
-            ]
-            
-            # Добавляем историю (не более MAX_HISTORY сообщений)
-            messages.extend(history[-MAX_HISTORY:])
-            
-            # Добавляем текущее сообщение
-            messages.append({"role": "user", "content": message})
-            
-            # Запрос к OpenAI
-            completion = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=messages,
-                temperature=0.7
-            )
-            
-            response = completion.choices[0].message.content
-            
-            # Обновляем историю
-            self._update_history(user_id, message, response)
-            
-            return response
-        except Exception as e:
-            logger.error(f"Ошибка OpenAI: {str(e)}")
-            return "Извините, не могу обработать запрос. Попробуйте позже."
+    def start(self):
+        """Запуск бота в отдельном потоке"""
+        def run_loop():
+            asyncio.set_event_loop(self.loop)
+            try:
+                self.loop.run_until_complete(self._initialize_components())
+                self.initialized.set()
+                self.loop.run_forever()
+            except Exception as e:
+                logger.critical(f"Фатальная ошибка: {str(e)}", exc_info=True)
+                os._exit(1)
 
-    def _update_history(self, user_id: int, user_message: str, bot_response: str):
-        """Обновление истории сообщений"""
-        if user_id not in self.chat_history:
-            self.chat_history[user_id] = []
+        self.executor.submit(run_loop)
+
+    async def _initialize_components(self):
+        """Инициализация компонентов"""
+        logger.info("Инициализация OpenAI...")
+        self.openai_client = openai.AsyncOpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            timeout=30.0
+        )
         
-        # Добавляем сообщение пользователя и ответ бота
-        self.chat_history[user_id].extend([
-            {"role": "user", "content": user_message},
-            {"role": "assistant", "content": bot_response}
-        ])
+        logger.info("Создание Telegram Application...")
+        self.application = ApplicationBuilder() \
+            .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
+            .build()
         
-        # Ограничиваем размер истории
-        if len(self.chat_history[user_id]) > MAX_HISTORY * 2:
-            self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY * 2:]
+        logger.info("Регистрация обработчиков...")
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            self._handle_message
+        ))
+        
+        logger.info("Инициализация приложения...")
+        await self.application.initialize()
+        
+        if "RENDER" in os.environ:
+            await self._setup_webhook()
+        
+        self.start_time = asyncio.get_event_loop().time()
+        logger.info("✅ Бот успешно инициализирован")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик входящих сообщений с учетом контекста"""
+        """Обработчик сообщений"""
         try:
             message = update.message or update.business_message
             user_id = message.from_user.id
@@ -107,41 +105,54 @@ class BotManager:
             
         except Exception as e:
             logger.error(f"Ошибка обработки: {str(e)}", exc_info=True)
-            await message.reply_text("⚠️ Произошла ошибка, попробуйте позже")
-
-# ... (остальной код остается без изменений)
+            await message.reply_text("⚠️ Произошла ошибка")
 
     async def _get_gpt_response(self, user_id: int, message: str) -> str:
-        """Запрос к OpenAI с обработкой ошибок"""
+        """Генерация ответа с историей"""
         try:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)}
+            ]
+            messages.extend(self.chat_history[user_id][-MAX_HISTORY*2:])
+            messages.append({"role": "user", "content": message})
+            
             completion = await self.openai_client.chat.completions.create(
                 model="gpt-4-turbo-preview",
-                messages=[
-                    {"role": "system", "content": "Ты полезный ассистент. Отвечай кратко и по делу."},
-                    {"role": "user", "content": message}
-                ],
+                messages=messages,
                 temperature=0.7
             )
-            return completion.choices[0].message.content
+            
+            response = completion.choices[0].message.content
+            self._update_history(user_id, message, response)
+            return response
+            
         except Exception as e:
             logger.error(f"Ошибка OpenAI: {str(e)}")
-            return "Извините, не могу обработать запрос. Попробуйте позже."
+            return "Извините, произошла ошибка"
+
+    def _update_history(self, user_id: int, user_message: str, bot_response: str):
+        """Обновление истории"""
+        self.chat_history[user_id].extend([
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": bot_response}
+        ])
+        if len(self.chat_history[user_id]) > MAX_HISTORY * 2:
+            self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY*2:]
 
     async def _setup_webhook(self):
-        """Настройка вебхука для бизнес-аккаунта"""
+        """Настройка вебхука"""
         webhook_url = os.getenv("WEBHOOK_URL") + '/webhook'
         await self.application.bot.set_webhook(
             url=webhook_url,
             max_connections=50,
-            allowed_updates=["message", "business_message"],
-            drop_pending_updates=True
+            allowed_updates=["message", "business_message"]
         )
         logger.info(f"Вебхук настроен: {webhook_url}")
 
     def process_update(self, json_data):
-        """Потокобезопасная обработка обновления"""
+        """Обработка обновления"""
         if not self.initialized.wait(timeout=self.init_timeout):
-            raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
+            raise RuntimeError("Таймаут инициализации")
         
         future = asyncio.run_coroutine_threadsafe(
             self._process_update(json_data),
@@ -150,40 +161,33 @@ class BotManager:
         return future.result(timeout=15)
 
     async def _process_update(self, json_data):
-        """Асинхронная обработка обновления"""
+        """Асинхронная обработка"""
         update = Update.de_json(json_data, self.application.bot)
         await self.application.process_update(update)
 
-# Инициализация бота при старте приложения
+# Инициализация бота
 bot_manager = BotManager()
-#bot_manager.start()
+bot_manager.start()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработчик вебхука Telegram"""
     try:
         if not bot_manager.initialized.is_set():
-            return jsonify({"status": "error", "message": "Bot is initializing"}), 503
+            return jsonify({"status": "initializing"}), 503
             
         bot_manager.process_update(request.get_json())
         return jsonify({"status": "ok"})
-        
     except Exception as e:
-        logger.error(f"Ошибка вебхука: {str(e)}", exc_info=True)
-        return jsonify({"status": "error", "message": str(e)}), 500
+        logger.error(f"Webhook error: {str(e)}")
+        return jsonify({"status": "error"}), 500
 
 @app.route('/')
 def home():
-    """Статусная страница"""
-    status = "running" if bot_manager.initialized.is_set() else "initializing"
-    return f"Telegram Bot Status: {status}"
+    return "Telegram Bot is running!"
 
 if __name__ == '__main__':
     if "RENDER" in os.environ:
-        try:
-            from waitress import serve
-            serve(app, host="0.0.0.0", port=10000)
-        except ImportError:
-            app.run(host='0.0.0.0', port=10000)
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=10000)
     else:
         app.run(host='0.0.0.0', port=5000)
