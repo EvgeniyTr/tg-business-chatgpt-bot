@@ -2,14 +2,15 @@ import os
 import asyncio
 import logging
 import threading
+import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
+from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask, request, jsonify
 import openai
-import json
 
 # Настройка логгирования
 logging.basicConfig(
@@ -89,48 +90,53 @@ class BotManager:
     async def _log_incoming_message(self, update: Update):
         """Логирование входящих сообщений"""
         try:
-            message = {
+            message_data = {
                 "update_id": update.update_id,
                 "message_id": update.message.message_id if update.message else None,
-                "date": update.message.date if update.message else None,
+                "date": update.message.date.isoformat() if update.message and update.message.date else None,
                 "chat_id": update.effective_chat.id if update.effective_chat else None,
                 "user_id": update.effective_user.id if update.effective_user else None,
-                "content_type": "voice" if update.message.voice else "text",
-                "content": update.message.text or "<voice_message>"
+                "content_type": "voice" if update.message and update.message.voice else "text",
+                "content": update.message.text if update.message else "<unknown>"
             }
-            logger.info("INCOMING MESSAGE: %s", json.dumps(message, ensure_ascii=False))
+            logger.info("INCOMING MESSAGE: %s", json.dumps(message_data, ensure_ascii=False))
         except Exception as e:
-            logger.error(f"Ошибка логирования сообщения: {str(e)}")
+            logger.error(f"Ошибка логирования сообщения: {str(e)}", exc_info=True)
+
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-     try:
-        await self._log_incoming_message(update)
-        
-        if not update.message or not update.message.text:
-            logger.warning("Получено пустое сообщение или сообщение без текста")
-            return
+        try:
+            await self._log_incoming_message(update)
+            
+            if not update.message or not update.message.text:
+                logger.warning("Получено пустое сообщение или сообщение без текста")
+                return
 
-        user_id = update.effective_user.id
-        text = update.message.text.strip()  # Добавляем очистку от пробелов
-        
-        logger.debug(f"Получено сообщение: '{text}' от {user_id}")
+            user_id = update.effective_user.id
+            text = update.message.text.strip()
+            
+            logger.debug(f"Обработка текста от {user_id}: {text[:50]}...")
 
-        # Явная проверка на команду с учётом возможных вариантов
-        if text.lower().startswith(("/generate_image", "/generateimage")):
-            logger.warning(f"Необработанная команда: {text}")
-            return
+            # Явная проверка команд
+            if text.lower().startswith(("/generate_image", "/generateimage")):
+                logger.warning(f"Пропущена команда: {text}")
+                return
 
-        # Обработка обычного текста
-        response = await self._process_text(user_id, text)
-        await update.message.reply_text(response)
-        
-    except Exception as e:
-        logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
-        if update.message:
-            await update.message.reply_text("⚠️ Ошибка обработки сообщения")
+            # Основная обработка сообщения
+            response = await self._process_text(user_id, text)
+            await update.message.reply_text(response)
+            
+        except Exception as e:
+            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
+            if update.message:
+                await update.message.reply_text("⚠️ Ошибка обработки сообщения")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await self._log_incoming_message(update)
+            if not context.args:
+                await update.message.reply_text("ℹ️ Формат команды: /generate_image <описание>")
+                return
+                
             prompt = ' '.join(context.args)
             logger.info(f"Запрос генерации изображения: {prompt}")
             
@@ -143,9 +149,10 @@ class BotManager:
             )
             image_url = response.data[0].url
             await update.message.reply_photo(image_url)
-            logger.info(f"Изображение успешно сгенерировано: {image_url}")
+            logger.info(f"Изображение сгенерировано: {image_url}")
+            
         except Exception as e:
-            logger.error(f"Ошибка генерации изображения: {str(e)}")
+            logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
             await update.message.reply_text("⚠️ Не удалось сгенерировать изображение")
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -156,26 +163,24 @@ class BotManager:
                 logger.warning("Получено сообщение без голосового файла")
                 return
 
-            logger.debug("Начата обработка голосового сообщения")
+            logger.debug("Обработка голосового сообщения")
             voice_file = await update.message.voice.get_file()
             
             with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
                 await voice_file.download_to_drive(temp_file.name)
-                logger.debug("Голосовое сообщение сохранено во временный файл")
                 
                 transcript = await self.openai_client.audio.transcriptions.create(
                     file=open(temp_file.name, "rb"),
                     model="whisper-1",
                     response_format="text"
                 )
-                logger.info(f"Транскрипция голосового сообщения: {transcript}")
+                logger.info(f"Транскрипция: {transcript}")
                 
             response = await self._process_text(update.effective_user.id, transcript)
             await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
-            logger.debug("Ответ на голосовое сообщение отправлен")
             
         except Exception as e:
-            logger.error(f"Ошибка обработки голоса: {str(e)}")
+            logger.error(f"Ошибка обработки голоса: {str(e)}", exc_info=True)
             await update.message.reply_text("⚠️ Ошибка распознавания голоса")
 
     async def _process_text(self, user_id: int, text: str) -> str:
@@ -185,7 +190,7 @@ class BotManager:
             {"role": "user", "content": text}
         ]
         
-        logger.debug(f"Запрос к GPT с сообщениями: {json.dumps(messages, ensure_ascii=False)}")
+        logger.debug(f"GPT запрос: {json.dumps(messages, ensure_ascii=False)}")
         
         completion = await self.openai_client.chat.completions.create(
             model="gpt-4-turbo-preview",
@@ -195,7 +200,7 @@ class BotManager:
         
         response = completion.choices[0].message.content
         self._update_history(user_id, text, response)
-        logger.debug(f"Получен ответ от GPT: {response[:100]}...")
+        logger.debug(f"GPT ответ: {response[:100]}...")
         return response
 
     def _update_history(self, user_id: int, text: str, response: str):
@@ -205,7 +210,7 @@ class BotManager:
         ])
         if len(self.chat_history[user_id]) > MAX_HISTORY * 2:
             self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY * 2:]
-        logger.debug(f"Обновлена история для пользователя {user_id}")
+        logger.debug(f"История обновлена для пользователя {user_id}")
 
     async def _setup_webhook(self):
         webhook_url = os.getenv("WEBHOOK_URL") + '/webhook'
@@ -237,7 +242,7 @@ class BotManager:
             await self.application.process_update(update)
             logger.debug("Обработка обновления завершена")
         except Exception as e:
-            logger.error(f"Ошибка обработки обновления: {str(e)}")
+            logger.error(f"Ошибка обработки обновления: {str(e)}", exc_info=True)
 
     async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Необработанная ошибка: {context.error}", exc_info=True)
@@ -260,7 +265,7 @@ def webhook():
         bot_manager.process_update(request.get_json())
         return jsonify({"status": "ok"})
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
+        logger.error(f"Webhook error: {str(e)}", exc_info=True)
         return jsonify({"status": "error"}), 500
 
 @app.route('/')
