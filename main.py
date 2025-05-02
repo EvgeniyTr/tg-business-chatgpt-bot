@@ -99,8 +99,8 @@ class BotManager:
             await self._setup_webhook()
 
     def _business_filter(self):
-        return filters.TEXT & filters.Lambda(
-            lambda msg: bool(getattr(msg, 'business_connection_id', None))
+        return filters.TEXT & filters.MessageFilter(
+           lambda msg: bool(msg.business_connection_id)
         )
     async def _check_working_hours(self):
         tz = pytz.timezone("Europe/Moscow")
