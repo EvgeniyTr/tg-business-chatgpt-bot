@@ -87,6 +87,35 @@ class BotManager:
             filters.UpdateType.BUSINESS_MESSAGES,
             self._handle_business_text
         ))
+
+        def _business_message_filter(self):
+        """Кастомный фильтр для бизнес-сообщений"""
+        def filter_func(update: Update):
+            # Проверяем наличие бизнес-коннекшена в сообщении
+            if update.message and update.message.business_connection_id:
+                return True
+            return False
+            
+        return filters.UpdateType.MESSAGE & filters.create(filter_func)
+
+    async def _handle_business_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик бизнес-сообщений"""
+        try:
+            await self._log_incoming_message(update)
+            
+            if not update.message or not update.message.text:
+                return
+
+            user_id = update.effective_user.id
+            text = update.message.text.strip()
+            logger.info(f"Business message from {user_id}: {text}")
+
+            # Общая логика обработки
+            await self._process_common_message(update, context, is_business=True)
+
+        except Exception as e:
+            logger.error(f"Business message error: {str(e)}", exc_info=True)
+            
         self.application.add_error_handler(self._error_handler)
         
         await self.application.initialize()
