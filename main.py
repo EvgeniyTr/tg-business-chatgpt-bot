@@ -1,68 +1,78 @@
 import os
 import asyncio
-from threading import Thread, Lock
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Глобальные переменные
-application = None
-loop = None
-loop_lock = Lock()
+class BotManager:
+    def __init__(self):
+        self.loop = asyncio.new_event_loop()
+        self.application = None
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.initialized = threading.Event()
 
-def run_async_loop():
-    global loop, application
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    async def init_bot():
-        global application
-        application = ApplicationBuilder() \
-            .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
-            .build()
+    def start(self):
+        self.executor.submit(self._run_loop)
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self.loop)
         
-        async def handle_message(update: Update, context):
-            await update.message.reply_text("✅ Бот работает!")
+        async def init_bot():
+            self.application = ApplicationBuilder() \
+                .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
+                .build()
+            
+            async def handle_message(update: Update, context):
+                await update.message.reply_text("✅ Бот работает стабильно!")
+            
+            self.application.add_handler(MessageHandler(filters.TEXT, handle_message))
+            await self.application.initialize()
+            
+            if "RENDER" in os.environ:
+                await self.application.bot.set_webhook(
+                    url=os.getenv("WEBHOOK_URL") + '/webhook'
+                )
+            
+            self.initialized.set()
         
-        application.add_handler(MessageHandler(filters.TEXT, handle_message))
-        await application.initialize()
+        self.loop.run_until_complete(init_bot())
+        self.loop.run_forever()
+
+    async def _process_update_async(self, json_data):
+        update = Update.de_json(json_data, self.application.bot)
+        await self.application.process_update(update)
+
+    def process_update(self, json_data):
+        if not self.initialized.wait(timeout=30):
+            raise RuntimeError("Bot initialization timeout")
         
-        if "RENDER" in os.environ:
-            await application.bot.set_webhook(
-                url=os.getenv("WEBHOOK_URL") + '/webhook'
-            )
-    
-    loop.run_until_complete(init_bot())
-    loop.run_forever()
+        future = asyncio.run_coroutine_threadsafe(
+            self._process_update_async(json_data),
+            self.loop
+        )
+        return future.result(timeout=10)
+
+# Инициализация менеджера бота
+bot_manager = BotManager()
+bot_manager.start()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if not application:
-        return jsonify({"status": "error", "message": "Bot not initialized"}), 503
-    
-    with loop_lock:
-        future = asyncio.run_coroutine_threadsafe(
-            process_update(request.get_json()),
-            loop
-        )
-        try:
-            future.result(timeout=10)
-            return jsonify({"status": "ok"})
-        except Exception as e:
-            return jsonify({"status": "error", "message": str(e)}), 500
+    try:
+        bot_manager.process_update(request.get_json())
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-async def process_update(json_data):
-    update = Update.de_json(json_data, application.bot)
-    await application.process_update(update)
+@app.route('/')
+def home():
+    return "Telegram Bot is running!"
 
 if __name__ == '__main__':
-    # Запускаем event loop в отдельном потоке
-    thread = Thread(target=run_async_loop, daemon=True)
-    thread.start()
-    
-    # Запускаем сервер
     if "RENDER" in os.environ:
         try:
             from waitress import serve
