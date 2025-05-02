@@ -99,9 +99,8 @@ class BotManager:
             await self._setup_webhook()
 
     def _business_filter(self):
-        return filters.TEXT & filters.MessageFilter(
-           lambda msg: bool(msg.business_connection_id)
-        )
+        return filters.TEXT & filters.ChatType.BUSINESS
+        
     async def _check_working_hours(self):
         tz = pytz.timezone("Europe/Moscow")
         now = datetime.now(tz)
@@ -251,4 +250,9 @@ def home():
     return "Telegram Bot is running!"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    if "RENDER" in os.environ:
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=port)
+    else:
+        app.run(host='0.0.0.0', port=port)
