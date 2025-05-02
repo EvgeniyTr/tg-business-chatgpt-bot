@@ -5,7 +5,7 @@ import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
-from telegram import Update, InputFile
+from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask, request, jsonify
 import openai
@@ -41,13 +41,13 @@ class BotManager:
         self.initialized = threading.Event()
         self.openai_client = None
         self.chat_history = defaultdict(list)
-        self.init_timeout = 120  # Добавляем недостающий атрибут
+        self.init_timeout = 120
         self.start_time = None
         
         self.owner_info = {
-            "owner_name": "Сергей ",
-    "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
-    "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
+            "owner_name": "Сергей",
+            "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
+            "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
         }
 
     def start(self):
@@ -74,7 +74,11 @@ class BotManager:
         # Регистрация обработчиков
         self.application.add_handler(CommandHandler("generate_image", self._generate_image))
         self.application.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
-        self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
+        self.application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL,
+            self._handle_text
+        ))
+        self.application.add_error_handler(self._error_handler)
         
         await self.application.initialize()
         
@@ -83,20 +87,23 @@ class BotManager:
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
+            if not update.message or not update.message.text:
+                logger.warning("Получено пустое сообщение или сообщение без текста")
+                return
+
             user_id = update.effective_user.id
             text = update.message.text
             
-            # Обработка команд
             if text.startswith("/generate_image"):
-                return  # Команда обрабатывается отдельным хендлером
-            
-            # Логика обработки текста
+                return
+
             response = await self._process_text(user_id, text)
             await update.message.reply_text(response)
             
         except Exception as e:
-            logger.error(f"Ошибка: {str(e)}")
-            await update.message.reply_text("⚠️ Ошибка обработки сообщения")
+            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
+            if update.message:
+                await update.message.reply_text("⚠️ Ошибка обработки сообщения")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
@@ -116,6 +123,10 @@ class BotManager:
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
+            if not update.message.voice:
+                logger.warning("Получено сообщение без голосового файла")
+                return
+
             voice_file = await update.message.voice.get_file()
             
             with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
@@ -166,25 +177,28 @@ class BotManager:
             max_connections=50,
             allowed_updates=["message", "voice", "business_message"]
         )
-
         logger.info(f"Вебхук настроен: {webhook_url}")
 
     def process_update(self, json_data):
-    """Обработка обновления"""
-    if not self.initialized.wait(timeout=self.init_timeout):
-        # Добавлен отступ перед raise
-        raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
-    
-    future = asyncio.run_coroutine_threadsafe(
-        self._process_update(json_data),
-        self.loop
-    )
-    return future.result(timeout=15)
+        """Обработка обновления"""
+        if not self.initialized.wait(timeout=self.init_timeout):
+            raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
+        
+        future = asyncio.run_coroutine_threadsafe(
+            self._process_update(json_data),
+            self.loop
+        )
+        return future.result(timeout=15)
 
     async def _process_update(self, json_data):
         """Асинхронная обработка"""
         update = Update.de_json(json_data, self.application.bot)
         await self.application.process_update(update)
+
+    async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.error(f"Необработанная ошибка: {context.error}", exc_info=True)
+        if update and update.message:
+            await update.message.reply_text("⚠️ Произошла внутренняя ошибка")
 
 # Инициализация бота
 bot_manager = BotManager()
