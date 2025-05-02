@@ -5,8 +5,8 @@ from aiogram.types import Message
 from aiohttp import web
 import logging
 import asyncio
-import os
-import OpenAI
+import openai  # <- правильный импорт
+
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
 from aiogram.client.bot import DefaultBotProperties
@@ -28,11 +28,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Установка прокси, если нужно
-# os.environ["HTTP_PROXY"] = "http://user:pass@host:port"
-# os.environ["HTTPS_PROXY"] = "http://user:pass@host:port"
-
-# Инициализация OpenAI клиента
+# Настройка OpenAI API-ключа
 openai.api_key = settings.OPENAI_KEY.get_secret_value()
 
 # Инициализация бота и диспетчера
