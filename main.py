@@ -101,7 +101,7 @@ class BotManager:
     def _business_filter(self):
         return filters.TEXT & filters.Lambda(
             lambda msg: bool(getattr(msg, 'business_connection_id', None))
-    
+        )
     async def _check_working_hours(self):
         tz = pytz.timezone("Europe/Moscow")
         now = datetime.now(tz)
