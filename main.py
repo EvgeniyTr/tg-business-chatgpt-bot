@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
 from flask import Flask, request, jsonify
 import openai
+import json
 
 # Настройка логгирования
 logging.basicConfig(
@@ -85,8 +86,26 @@ class BotManager:
         if "RENDER" in os.environ:
             await self._setup_webhook()
 
+    async def _log_incoming_message(self, update: Update):
+        """Логирование входящих сообщений"""
+        try:
+            message = {
+                "update_id": update.update_id,
+                "message_id": update.message.message_id if update.message else None,
+                "date": update.message.date if update.message else None,
+                "chat_id": update.effective_chat.id if update.effective_chat else None,
+                "user_id": update.effective_user.id if update.effective_user else None,
+                "content_type": "voice" if update.message.voice else "text",
+                "content": update.message.text or "<voice_message>"
+            }
+            logger.info("INCOMING MESSAGE: %s", json.dumps(message, ensure_ascii=False))
+        except Exception as e:
+            logger.error(f"Ошибка логирования сообщения: {str(e)}")
+
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
+            await self._log_incoming_message(update)
+            
             if not update.message or not update.message.text:
                 logger.warning("Получено пустое сообщение или сообщение без текста")
                 return
@@ -94,11 +113,14 @@ class BotManager:
             user_id = update.effective_user.id
             text = update.message.text
             
+            logger.debug(f"Начата обработка сообщения от {user_id}: {text[:50]}...")
+            
             if text.startswith("/generate_image"):
                 return
 
             response = await self._process_text(user_id, text)
             await update.message.reply_text(response)
+            logger.debug(f"Отправлен ответ пользователю {user_id}")
             
         except Exception as e:
             logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
@@ -107,7 +129,10 @@ class BotManager:
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
+            await self._log_incoming_message(update)
             prompt = ' '.join(context.args)
+            logger.info(f"Запрос генерации изображения: {prompt}")
+            
             response = await self.openai_client.images.generate(
                 model="dall-e-3",
                 prompt=prompt,
@@ -117,29 +142,36 @@ class BotManager:
             )
             image_url = response.data[0].url
             await update.message.reply_photo(image_url)
+            logger.info(f"Изображение успешно сгенерировано: {image_url}")
         except Exception as e:
             logger.error(f"Ошибка генерации изображения: {str(e)}")
             await update.message.reply_text("⚠️ Не удалось сгенерировать изображение")
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
+            await self._log_incoming_message(update)
+            
             if not update.message.voice:
                 logger.warning("Получено сообщение без голосового файла")
                 return
 
+            logger.debug("Начата обработка голосового сообщения")
             voice_file = await update.message.voice.get_file()
             
             with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
                 await voice_file.download_to_drive(temp_file.name)
+                logger.debug("Голосовое сообщение сохранено во временный файл")
                 
                 transcript = await self.openai_client.audio.transcriptions.create(
                     file=open(temp_file.name, "rb"),
                     model="whisper-1",
                     response_format="text"
                 )
+                logger.info(f"Транскрипция голосового сообщения: {transcript}")
                 
             response = await self._process_text(update.effective_user.id, transcript)
             await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
+            logger.debug("Ответ на голосовое сообщение отправлен")
             
         except Exception as e:
             logger.error(f"Ошибка обработки голоса: {str(e)}")
@@ -152,6 +184,8 @@ class BotManager:
             {"role": "user", "content": text}
         ]
         
+        logger.debug(f"Запрос к GPT с сообщениями: {json.dumps(messages, ensure_ascii=False)}")
+        
         completion = await self.openai_client.chat.completions.create(
             model="gpt-4-turbo-preview",
             messages=messages,
@@ -160,6 +194,7 @@ class BotManager:
         
         response = completion.choices[0].message.content
         self._update_history(user_id, text, response)
+        logger.debug(f"Получен ответ от GPT: {response[:100]}...")
         return response
 
     def _update_history(self, user_id: int, text: str, response: str):
@@ -169,6 +204,7 @@ class BotManager:
         ])
         if len(self.chat_history[user_id]) > MAX_HISTORY * 2:
             self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY * 2:]
+        logger.debug(f"Обновлена история для пользователя {user_id}")
 
     async def _setup_webhook(self):
         webhook_url = os.getenv("WEBHOOK_URL") + '/webhook'
@@ -181,6 +217,8 @@ class BotManager:
 
     def process_update(self, json_data):
         """Обработка обновления"""
+        logger.debug(f"Получено обновление: {json.dumps(json_data, indent=2)}")
+        
         if not self.initialized.wait(timeout=self.init_timeout):
             raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
         
@@ -192,8 +230,13 @@ class BotManager:
 
     async def _process_update(self, json_data):
         """Асинхронная обработка"""
-        update = Update.de_json(json_data, self.application.bot)
-        await self.application.process_update(update)
+        try:
+            logger.debug("Начало обработки обновления")
+            update = Update.de_json(json_data, self.application.bot)
+            await self.application.process_update(update)
+            logger.debug("Обработка обновления завершена")
+        except Exception as e:
+            logger.error(f"Ошибка обработки обновления: {str(e)}")
 
     async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Необработанная ошибка: {context.error}", exc_info=True)
@@ -207,6 +250,9 @@ bot_manager.start()
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
+        logger.info("Входящий вебхук запрос. Заголовки: %s", request.headers)
+        logger.debug("Тело запроса: %s", request.get_data(as_text=True))
+        
         if not bot_manager.initialized.is_set():
             return jsonify({"status": "initializing"}), 503
             
