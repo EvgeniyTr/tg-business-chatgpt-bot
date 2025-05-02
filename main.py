@@ -1,18 +1,31 @@
 import os
 import asyncio
+from threading import Thread
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+
+# Глобальные переменные
 application = None
+event_loop = None
+
+def run_async_loop():
+    global event_loop
+    event_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(event_loop)
+    event_loop.run_forever()
 
 async def initialize_bot():
     global application
-    application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+    
+    application = ApplicationBuilder() \
+        .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
+        .build()
     
     async def handle_message(update: Update, context):
-        await update.message.reply_text("✅ Бот работает корректно!")
+        await update.message.reply_text("✅ Бот работает стабильно!")
     
     application.add_handler(MessageHandler(filters.TEXT, handle_message))
     await application.initialize()
@@ -27,31 +40,35 @@ def webhook():
     json_data = request.get_json()
     update = Update.de_json(json_data, application.bot)
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    future = asyncio.run_coroutine_threadsafe(
+        application.process_update(update),
+        event_loop
+    )
     try:
-        loop.run_until_complete(application.process_update(update))
+        future.result(timeout=10)
         return jsonify({"status": "ok"})
-    finally:
-        loop.close()
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/')
 def home():
     return "Telegram Bot is running!"
 
 if __name__ == '__main__':
-    # Инициализация бота
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(initialize_bot())
+    # Запускаем event loop в отдельном потоке
+    thread = Thread(target=run_async_loop)
+    thread.daemon = True
+    thread.start()
     
-    # Запуск сервера с резервным вариантом
+    # Инициализируем бота
+    asyncio.run_coroutine_threadsafe(initialize_bot(), event_loop).result()
+    
+    # Запускаем сервер
     if "RENDER" in os.environ:
         try:
             from waitress import serve
             serve(app, host="0.0.0.0", port=10000)
         except ImportError:
-            print("Waitress not found, falling back to Flask development server")
             app.run(host='0.0.0.0', port=10000)
     else:
         app.run(host='0.0.0.0', port=5000)
