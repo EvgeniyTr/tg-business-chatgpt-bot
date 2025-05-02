@@ -97,7 +97,7 @@ class BotManager:
             filters.UpdateType.MESSAGE &
             filters.Message(filters.TEXT) &
             filters.Lambda(lambda upd: bool(upd.message.business_connection_id)
-        )
+        ))
 
     async def _log_incoming_message(self, update: Update):
         """Логирование входящих сообщений"""
