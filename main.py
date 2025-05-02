@@ -6,9 +6,9 @@ import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
-from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
+from telegram.constants import ChatType
 from flask import Flask, request, jsonify
 import openai
 
@@ -34,6 +34,7 @@ SYSTEM_PROMPT = """
 2. Сохраняй мой стиль общения
 3. Будь естественным
 """
+AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
 
 class BotManager:
     def __init__(self):
@@ -80,6 +81,10 @@ class BotManager:
             filters.TEXT & ~filters.COMMAND & ~filters.StatusUpdate.ALL,
             self._handle_text
         ))
+        self.application.add_handler(MessageHandler(
+            filters.ChatType.BUSINESS & filters.TEXT,
+            self._handle_business_text
+        ))
         self.application.add_error_handler(self._error_handler)
         
         await self.application.initialize()
@@ -94,6 +99,7 @@ class BotManager:
                 "update_id": update.update_id,
                 "message_id": update.message.message_id if update.message else None,
                 "date": update.message.date.isoformat() if update.message and update.message.date else None,
+                "chat_type": update.effective_chat.type if update.effective_chat else None,
                 "chat_id": update.effective_chat.id if update.effective_chat else None,
                 "user_id": update.effective_user.id if update.effective_user else None,
                 "content_type": "voice" if update.message and update.message.voice else "text",
@@ -104,35 +110,41 @@ class BotManager:
             logger.error(f"Ошибка логирования сообщения: {str(e)}", exc_info=True)
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._process_common_message(update, context, is_business=False)
+
+    async def _handle_business_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._process_common_message(update, context, is_business=True)
+
+    async def _process_common_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE, is_business: bool):
         try:
             await self._log_incoming_message(update)
             
             if not update.message or not update.message.text:
-                logger.warning("Получено пустое сообщение или сообщение без текста")
                 return
 
             user_id = update.effective_user.id
             text = update.message.text.strip()
-            
-            logger.debug(f"Обработка текста от {user_id}: {text[:50]}...")
+            logger.debug(f"Обработка {'бизнес-' if is_business else ''}сообщения от {user_id}: {text}")
 
-            # Явная проверка команд
-            if text.lower().startswith(("/generate_image", "/generateimage")):
-                logger.warning(f"Пропущена команда: {text}")
+            # Автоматическая генерация изображения
+            if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
+                prompt = text + " в стиле профессиональной фотографии"
+                await self._generate_image_from_text(update, prompt)
                 return
 
-            # Основная обработка сообщения
+            # Ответ через GPT
             response = await self._process_text(user_id, text)
             await update.message.reply_text(response)
-            
+
         except Exception as e:
-            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
             if update.message:
                 await update.message.reply_text("⚠️ Ошибка обработки сообщения")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await self._log_incoming_message(update)
+            
             if not context.args:
                 await update.message.reply_text("ℹ️ Формат команды: /generate_image <описание>")
                 return
@@ -155,12 +167,21 @@ class BotManager:
             logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
             await update.message.reply_text("⚠️ Не удалось сгенерировать изображение")
 
+    async def _generate_image_from_text(self, update: Update, prompt: str):
+        """Генерация изображения по текстовому запросу"""
+        try:
+            context = ContextTypes.DEFAULT_TYPE(application=self.application, update=update)
+            context.args = prompt.split()
+            await self._generate_image(update, context)
+        except Exception as e:
+            logger.error(f"Auto-generation error: {str(e)}")
+            await update.message.reply_text("⚠️ Не удалось обработать запрос на генерацию")
+
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await self._log_incoming_message(update)
             
             if not update.message.voice:
-                logger.warning("Получено сообщение без голосового файла")
                 return
 
             logger.debug("Обработка голосового сообщения")
@@ -176,8 +197,11 @@ class BotManager:
                 )
                 logger.info(f"Транскрипция: {transcript}")
                 
-            response = await self._process_text(update.effective_user.id, transcript)
-            await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
+                if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
+                    await self._generate_image_from_text(update, transcript)
+                else:
+                    response = await self._process_text(update.effective_user.id, transcript)
+                    await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
             
         except Exception as e:
             logger.error(f"Ошибка обработки голоса: {str(e)}", exc_info=True)
@@ -222,7 +246,7 @@ class BotManager:
         logger.info(f"Вебхук настроен: {webhook_url}")
 
     def process_update(self, json_data):
-        """Обработка обновления"""
+        """Обработка обновления с увеличенным таймаутом"""
         logger.debug(f"Получено обновление: {json.dumps(json_data, indent=2)}")
         
         if not self.initialized.wait(timeout=self.init_timeout):
@@ -232,10 +256,9 @@ class BotManager:
             self._process_update(json_data),
             self.loop
         )
-        return future.result(timeout=15)
+        return future.result(timeout=30)  # Увеличенный таймаут
 
     async def _process_update(self, json_data):
-        """Асинхронная обработка"""
         try:
             logger.debug("Начало обработки обновления")
             update = Update.de_json(json_data, self.application.bot)
@@ -257,11 +280,6 @@ bot_manager.start()
 def webhook():
     try:
         logger.info("Входящий вебхук запрос. Заголовки: %s", request.headers)
-        logger.debug("Тело запроса: %s", request.get_data(as_text=True))
-        
-        if not bot_manager.initialized.is_set():
-            return jsonify({"status": "initializing"}), 503
-            
         bot_manager.process_update(request.get_json())
         return jsonify({"status": "ok"})
     except Exception as e:
