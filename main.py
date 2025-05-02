@@ -2,26 +2,34 @@ import os
 import asyncio
 from telegram import Update, Bot
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
-from flask import Flask, request
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+
+# Создаем Application один раз при запуске
+application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
 
 # Обработчик сообщений
 async def handle_message(update: Update, context):
     await update.message.reply_text("✅ Бот работает корректно!")
 
-# Инициализация приложения
-application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+# Добавляем обработчик
 application.add_handler(MessageHandler(filters.TEXT, handle_message))
 
-# Вебхук для Telegram
+# Синхронная обертка для обработки вебхука
 @app.route('/webhook', methods=['POST'])
-async def webhook():
-    json_data = await request.get_json()
+def webhook():
+    json_data = request.get_json()
     update = Update.de_json(json_data, bot)
-    await application.process_update(update)
-    return "OK"
+    
+    # Запускаем асинхронную обработку в event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(application.process_update(update))
+    loop.close()
+    
+    return jsonify({"status": "ok"})
 
 # Главная страница
 @app.route('/')
@@ -35,12 +43,14 @@ async def set_webhook_async():
 if __name__ == '__main__':
     # Настройка для Render
     if "RENDER" in os.environ:
-        # Устанавливаем вебхук асинхронно
-        loop = asyncio.get_event_loop()
+        # Устанавливаем вебхук
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         loop.run_until_complete(set_webhook_async())
+        loop.close()
         
         # Запускаем Flask сервер
-        app.run(host='0.0.0.0', port=os.getenv("PORT", 5000))
+        app.run(host='0.0.0.0', port=os.getenv("PORT", 10000))
     else:
         # Локальный режим с polling
         application.run_polling()
