@@ -101,31 +101,32 @@ class BotManager:
             logger.info("INCOMING MESSAGE: %s", json.dumps(message, ensure_ascii=False))
         except Exception as e:
             logger.error(f"Ошибка логирования сообщения: {str(e)}")
-
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            await self._log_incoming_message(update)
-            
-            if not update.message or not update.message.text:
-                logger.warning("Получено пустое сообщение или сообщение без текста")
-                return
+     try:
+        await self._log_incoming_message(update)
+        
+        if not update.message or not update.message.text:
+            logger.warning("Получено пустое сообщение или сообщение без текста")
+            return
 
-            user_id = update.effective_user.id
-            text = update.message.text
-            
-            logger.debug(f"Начата обработка сообщения от {user_id}: {text[:50]}...")
-            
-            if text.startswith("/generate_image"):
-                return
+        user_id = update.effective_user.id
+        text = update.message.text.strip()  # Добавляем очистку от пробелов
+        
+        logger.debug(f"Получено сообщение: '{text}' от {user_id}")
 
-            response = await self._process_text(user_id, text)
-            await update.message.reply_text(response)
-            logger.debug(f"Отправлен ответ пользователю {user_id}")
-            
-        except Exception as e:
-            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
-            if update.message:
-                await update.message.reply_text("⚠️ Ошибка обработки сообщения")
+        # Явная проверка на команду с учётом возможных вариантов
+        if text.lower().startswith(("/generate_image", "/generateimage")):
+            logger.warning(f"Необработанная команда: {text}")
+            return
+
+        # Обработка обычного текста
+        response = await self._process_text(user_id, text)
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
+        if update.message:
+            await update.message.reply_text("⚠️ Ошибка обработки сообщения")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
