@@ -6,8 +6,7 @@ from aiohttp import web
 import logging
 import asyncio
 import os
-
-from openai import OpenAI
+import OpenAI
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
 from aiogram.client.bot import DefaultBotProperties
@@ -34,7 +33,7 @@ settings = Settings()
 # os.environ["HTTPS_PROXY"] = "http://user:pass@host:port"
 
 # Инициализация OpenAI клиента
-client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
+openai.api_key = settings.OPENAI_KEY.get_secret_value()
 
 # Инициализация бота и диспетчера
 bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -48,7 +47,7 @@ dp.include_router(router)
 async def handle_message(message: Message):
     logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
