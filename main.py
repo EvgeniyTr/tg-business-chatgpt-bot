@@ -84,12 +84,6 @@ class BotManager:
                 )
                 logger.info(f"Вебхук установлен: {webhook_url}")
 
-        async def _post_init(self, app):
-            """Дополнительная инициализация после создания приложения"""
-            self.start_time = asyncio.get_event_loop().time()
-            app.bot_data["start_time"] = self.start_time
-            logger.info("Post-init завершен")
-
         try:
             self.loop.run_until_complete(init_bot())
             self.loop.run_forever()
@@ -97,6 +91,11 @@ class BotManager:
             logger.critical(f"Фатальная ошибка в event loop: {str(e)}", exc_info=True)
             raise
 
+    async def _post_init(self, app):
+            """Дополнительная инициализация после создания приложения"""
+            self.start_time = asyncio.get_event_loop().time()
+            app.bot_data["start_time"] = self.start_time
+            logger.info("Post-init завершен")
     async def _get_gpt_response(self, user_id: int, message: str) -> str:
         """Получаем ответ от GPT с учетом истории"""
         try:
