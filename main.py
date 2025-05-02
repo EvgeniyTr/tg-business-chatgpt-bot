@@ -1,6 +1,6 @@
 import os
 import asyncio
-from threading import Thread, Event
+from threading import Thread, Lock
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters
 from flask import Flask, request, jsonify
@@ -9,22 +9,22 @@ app = Flask(__name__)
 
 # Глобальные переменные
 application = None
-loop_ready = Event()
+loop = None
+loop_lock = Lock()
 
 def run_async_loop():
-    global application
+    global loop, application
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # Создаем Application внутри event loop
-    async def create_app():
+    async def init_bot():
         global application
         application = ApplicationBuilder() \
             .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
             .build()
         
         async def handle_message(update: Update, context):
-            await update.message.reply_text("✅ Бот работает стабильно!")
+            await update.message.reply_text("✅ Бот работает!")
         
         application.add_handler(MessageHandler(filters.TEXT, handle_message))
         await application.initialize()
@@ -33,42 +33,34 @@ def run_async_loop():
             await application.bot.set_webhook(
                 url=os.getenv("WEBHOOK_URL") + '/webhook'
             )
-        
-        loop_ready.set()  # Сигнализируем, что бот готов
     
-    loop.run_until_complete(create_app())
+    loop.run_until_complete(init_bot())
     loop.run_forever()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if not loop_ready.is_set():
-        return jsonify({"status": "error", "message": "Bot is initializing"}), 503
+    if not application:
+        return jsonify({"status": "error", "message": "Bot not initialized"}), 503
     
-    json_data = request.get_json()
-    update = Update.de_json(json_data, application.bot)
-    
-    future = asyncio.run_coroutine_threadsafe(
-        application.process_update(update),
-        asyncio.get_event_loop()
-    )
-    try:
-        future.result(timeout=10)
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    with loop_lock:
+        future = asyncio.run_coroutine_threadsafe(
+            process_update(request.get_json()),
+            loop
+        )
+        try:
+            future.result(timeout=10)
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/')
-def home():
-    return "Telegram Bot is running!"
+async def process_update(json_data):
+    update = Update.de_json(json_data, application.bot)
+    await application.process_update(update)
 
 if __name__ == '__main__':
     # Запускаем event loop в отдельном потоке
-    thread = Thread(target=run_async_loop)
-    thread.daemon = True
+    thread = Thread(target=run_async_loop, daemon=True)
     thread.start()
-    
-    # Ждем инициализации бота (максимум 30 секунд)
-    loop_ready.wait(timeout=30)
     
     # Запускаем сервер
     if "RENDER" in os.environ:
