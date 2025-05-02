@@ -39,23 +39,26 @@ dp.include_router(router)
 @router.message()
 async def handle_message(message: Message):
     logger.info(f"Message from {message.from_user.id}: {message.text}")
+    
     try:
-     client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
+        client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
 
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[
-        {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
-        {"role": "user", "content": message.text}
-    ]
-)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
+                {"role": "user", "content": message.text}
+            ]
+        )
 
-reply = response.choices[0].message.content
+        reply = response.choices[0].message.content
+
     except Exception as e:
         logger.error(f"Ошибка OpenAI: {e}")
         reply = "Произошла ошибка при обработке запроса. Попробуйте позже."
 
     await message.answer(reply)
+
 
 # Создание aiohttp-приложения с webhook
 async def on_startup(app: web.Application):
