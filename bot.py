@@ -3,8 +3,8 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from aiohttp import web
+from openai import OpenAI
 import logging
-import openai
 import asyncio
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
@@ -40,14 +40,17 @@ dp.include_router(router)
 async def handle_message(message: Message):
     logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        response = await openai.ChatCompletion.acreate(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
-                {"role": "user", "content": message.text}
-            ]
-        )
-        reply = response.choices[0].message.content
+     client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
+
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[
+        {"role": "system", "content": "Ты полезный AI-бот для поддержки клиентов."},
+        {"role": "user", "content": message.text}
+    ]
+)
+
+reply = response.choices[0].message.content
     except Exception as e:
         logger.error(f"Ошибка OpenAI: {e}")
         reply = "Произошла ошибка при обработке запроса. Попробуйте позже."
