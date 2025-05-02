@@ -5,7 +5,7 @@ from aiogram.types import Message
 from aiohttp import web
 import logging
 import asyncio
-import openai  # <- правильный импорт
+import openai
 
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
