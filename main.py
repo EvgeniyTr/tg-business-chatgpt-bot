@@ -172,7 +172,7 @@ class BotManager:
     def process_update(self, json_data):
         """Обработка обновления"""
         if not self.initialized.wait(timeout=self.init_timeout):
-        raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
+            raise RuntimeError(f"Таймаут инициализации ({self.init_timeout} сек)")
         
         future = asyncio.run_coroutine_threadsafe(
             self._process_update(json_data),
