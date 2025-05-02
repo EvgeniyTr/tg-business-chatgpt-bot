@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes, CommandHandler
-from telegram.constants import ChatType
+from telegram.constants import ChatType, UpdateType
 from flask import Flask, request, jsonify
 import openai
 
@@ -82,7 +82,9 @@ class BotManager:
             self._handle_text
         ))
         self.application.add_handler(MessageHandler(
-            filters.ChatType.BUSINESS & filters.TEXT,
+            filters.TEXT & 
+            filters.ChatType.PRIVATE & 
+            filters.UpdateType.BUSINESS_MESSAGES,
             self._handle_business_text
         ))
         self.application.add_error_handler(self._error_handler)
