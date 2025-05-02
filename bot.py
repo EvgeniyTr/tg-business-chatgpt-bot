@@ -1,21 +1,23 @@
-# src/bot.py
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from openai import OpenAI
 import logging
 import asyncio
+import os
+
+from openai import OpenAI
 from pydantic_settings import BaseSettings
 from pydantic import SecretStr
+from aiogram.client.bot import DefaultBotProperties
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-# Logging
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Settings
+# Конфиг с переменными окружения
 class Settings(BaseSettings):
     TELEGRAM_TOKEN: SecretStr
     OPENAI_KEY: SecretStr
@@ -27,19 +29,25 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Bot
-bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), parse_mode=ParseMode.HTML)
+# Установка прокси, если нужно
+# os.environ["HTTP_PROXY"] = "http://user:pass@host:port"
+# os.environ["HTTPS_PROXY"] = "http://user:pass@host:port"
+
+# Инициализация OpenAI клиента
+client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
+
+# Инициализация бота и диспетчера
+bot = Bot(token=settings.TELEGRAM_TOKEN.get_secret_value(), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
 
-# Message handler
+# Обработка всех входящих сообщений
 @router.message()
 async def handle_message(message: Message):
     logger.info(f"Message from {message.from_user.id}: {message.text}")
     try:
-        client = OpenAI(api_key=settings.OPENAI_KEY.get_secret_value())
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -49,11 +57,12 @@ async def handle_message(message: Message):
         )
         reply = response.choices[0].message.content
     except Exception as e:
-        logger.error(f"OpenAI error: {e}")
+        logger.error(f"Ошибка OpenAI: {e}")
         reply = "Произошла ошибка при обработке запроса. Попробуйте позже."
+
     await message.answer(reply)
 
-# Webhook setup
+# Создание aiohttp-приложения с webhook
 async def on_startup(app: web.Application):
     await bot.set_webhook(f"{settings.WEBHOOK_URL}/webhook")
 
@@ -66,7 +75,7 @@ async def main():
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
 
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
+    app.router.add_route("POST", "/webhook", SimpleRequestHandler(dispatcher=dp, bot=bot).handle)
     setup_application(app, dp, bot=bot)
 
     runner = web.AppRunner(app)
