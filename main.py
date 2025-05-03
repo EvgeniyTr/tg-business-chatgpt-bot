@@ -314,25 +314,24 @@ class BotManager:
             voice_file = await message.voice.get_file()
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(voice_file.file_path)
-                with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
-                    temp_file.write(response.content)
-                    temp_file.seek(0)
-                    
-                    logger.info(f"Отправка голосового сообщения в Whisper для транскрипции (чат: {chat_id})")
-                    transcript = await self.openai_client.audio.transcriptions.create(
-                        file=temp_file,
-                        model="whisper-1",
-                        response_format="text"
-                    )
-                    
-                    logger.info(f"Распознанный текст в чате {chat_id}: {transcript}")
-                    
-                    if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
-                        await self._generate_image_from_text(message, transcript)
-                    else:
-                        response = await self._process_text(chat_id, transcript)
-                        await message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
-                        logger.info(f"Ответ на голосовое сообщение отправлен в чат {chat_id}: {response}")
+                file_content = response.content
+                logger.info(f"Голосовой файл загружен для чата {chat_id}, размер: {len(file_content)} байт")
+                
+                logger.info(f"Отправка голосового сообщения в Whisper для транскрипции (чат: {chat_id})")
+                transcript = await self.openai_client.audio.transcriptions.create(
+                    file=("voice.ogg", file_content, "audio/ogg"),
+                    model="whisper-1",
+                    response_format="text"
+                )
+                
+                logger.info(f"Распознанный текст в чате {chat_id}: {transcript}")
+                
+                if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
+                    await self._generate_image_from_text(message, transcript)
+                else:
+                    response = await self._process_text(chat_id, transcript)
+                    await message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
+                    logger.info(f"Ответ на голосовое сообщение отправлен в чат {chat_id}: {response}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки голосового сообщения после задержки для чата {chat_id}: {str(e)}", exc_info=True)
