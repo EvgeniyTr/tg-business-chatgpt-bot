@@ -116,7 +116,7 @@ class BotManager:
             self.application.add_handler(CommandHandler("start", self._start_command))
             self.application.add_handler(CommandHandler("generate_image", self._generate_image))
             self.application.add_handler(MessageHandler(
-                (filters.TEXT & ~filters.COMMAND) | filters.UpdateType.BUSINESS_MESSAGE,
+                (filters.TEXT & ~filters.COMMAND) | (filters.TEXT & filters.UpdateType.BUSINESS_MESSAGE),
                 self._handle_message
             ))
             self.application.add_handler(MessageHandler(
@@ -318,14 +318,14 @@ class BotManager:
                     temp_file.write(response.content)
                     temp_file.seek(0)
                     
-                    logger.info(f"Отправка голосового сообщения в Whisper для транскрипции")
+                    logger.info(f"Отправка голосового сообщения в Whisper для транскрипции (чат: {chat_id})")
                     transcript = await self.openai_client.audio.transcriptions.create(
                         file=temp_file,
                         model="whisper-1",
                         response_format="text"
                     )
                     
-                    logger.info(f"Распознанный текст: {transcript}")
+                    logger.info(f"Распознанный текст в чате {chat_id}: {transcript}")
                     
                     if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
                         await self._generate_image_from_text(message, transcript)
