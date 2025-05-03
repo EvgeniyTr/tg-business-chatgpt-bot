@@ -1,25 +1,7 @@
 import os
 import asyncio
 import logging
-import threading
-import httpx
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from tempfile import NamedTemporaryFile
-from datetime import datetime, timedelta
-
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    CommandHandler,
-)
-from flask import Flask, request, jsonify
-import openai
-
-# Настройка логгирования
+import threading# Настройка логгирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -116,11 +98,11 @@ class BotManager:
             self.application.add_handler(CommandHandler("start", self._start_command))
             self.application.add_handler(CommandHandler("generate_image", self._generate_image))
             self.application.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
+                (filters.TEXT & ~filters.COMMAND) | filters.UpdateType.BUSINESS_MESSAGE,
                 self._handle_message
             ))
             self.application.add_handler(MessageHandler(
-                filters.VOICE,
+                filters.VOICE | (filters.VOICE & filters.UpdateType.BUSINESS_MESSAGE),
                 self._handle_voice_message
             ))
             
@@ -151,24 +133,37 @@ class BotManager:
             logger.error(f"Ошибка обработки /start: {str(e)}", exc_info=True)
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстовых сообщений в бизнес-чатах"""
+        """Обработчик текстовых сообщений в бизнес-чатах и личных чатах"""
         try:
-            message = update.message
+            # Проверяем, является ли обновление бизнес-сообщением
+            if update.business_message:
+                message = update.business_message
+                is_business = True
+            else:
+                message = update.message
+                is_business = False
+
             user = update.effective_user
             chat_id = message.chat_id
             message_time = message.date
+            text = message.text.strip()
 
-            logger.info(f"Сообщение в чате {chat_id} от {user.id}: {message.text}")
+            logger.info(
+                f"{'Бизнес-сообщение' if is_business else 'Сообщение'} в чате {chat_id} "
+                f"от {user.id} ({user.username or user.first_name}): {text} "
+                f"(время: {message_time})"
+            )
 
             # Проверка времени сообщения (10 секунд задержки)
-            now = datetime.now(pytz.UTC)
+            now = datetime.now(timezone.utc)
             time_diff = now - message_time
             if time_diff.total_seconds() < RESPONSE_DELAY_SECONDS:
-                logger.info(f"Сообщение слишком новое, ждем 10 секунд: {message.text}")
+                logger.info(
+                    f"{'Бизнес-сообщение' if is_business else 'Сообщение'} слишком новое, "
+                    f"ждем 10 секунд: {text}"
+                )
                 return
 
-            text = message.text.strip()
-            
             if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
                 await self._generate_image_from_text(message, text)
             else:
@@ -176,7 +171,7 @@ class BotManager:
                 await message.reply_text(response)
 
         except Exception as e:
-            logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки {'бизнес-сообщения' if is_business else 'сообщения'}: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -184,7 +179,7 @@ class BotManager:
         try:
             user = update.effective_user
             prompt = ' '.join(context.args)
-            logger.info(f"Запрос генерации изображения от {user.id}: {prompt}")
+            logger.info(f"Запрос генерации изображения от {user.id} ({user.username or user.first_name}): {prompt}")
             
             if not prompt:
                 raise ValueError("Пустой промпт")
@@ -200,13 +195,13 @@ class BotManager:
             prompt = await self._create_image_prompt(text)
             await self._generate_and_send_image(message, prompt)
         except Exception as e:
-            logger.error(f"Ошибка генерации: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка генерации изображения")
 
     async def _generate_and_send_image(self, message: Update, prompt: str):
         """Отправка сгенерированного изображения"""
         try:
-            logger.info(f"Генерация изображения: {prompt}")
+            logger.info(f"Генерация изображения с промптом: {prompt}")
             response = await self.openai_client.images.generate(
                 model="dall-e-3",
                 prompt=prompt[:1000],
@@ -222,6 +217,7 @@ class BotManager:
     async def _create_image_prompt(self, text: str) -> str:
         """Создание промпта для DALL-E через GPT"""
         try:
+            logger.info(f"Создание промпта для DALL-E с текстом: {text}")
             messages = [{
                 "role": "system", 
                 "content": "Сгенерируй детальное англоязычное описание для DALL-E на основе запроса пользователя"
@@ -236,26 +232,42 @@ class BotManager:
                 temperature=0.7,
                 max_tokens=500
             )
-            return completion.choices[0].message.content
+            prompt = completion.choices[0].message.content
+            logger.info(f"Промпт для DALL-E создан: {prompt}")
+            return prompt
         except Exception as e:
-            logger.error(f"Ошибка создания промпта: {str(e)}")
+            logger.error(f"Ошибка создания промпта для DALL-E: {str(e)}")
             return text
 
     async def _handle_voice_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка голосовых сообщений"""
         try:
+            # Проверяем, является ли обновление бизнес-сообщением
+            if update.business_message:
+                message = update.business_message
+                is_business = True
+            else:
+                message = update.message
+                is_business = False
+
             user = update.effective_user
-            message = update.message
             chat_id = message.chat_id
             message_time = message.date
 
-            logger.info(f"Голосовое сообщение от {user.id} в чате {chat_id}")
+            logger.info(
+                f"{'Бизнес-голосовое сообщение' if is_business else 'Голосовое сообщение'} "
+                f"в чате {chat_id} от {user.id} ({user.username or user.first_name}) "
+                f"(время: {message_time})"
+            )
 
             # Проверка времени сообщения (10 секунд задержки)
-            now = datetime.now(pytz.UTC)
+            now = datetime.now(timezone.utc)
             time_diff = now - message_time
             if time_diff.total_seconds() < RESPONSE_DELAY_SECONDS:
-                logger.info(f"Голосовое сообщение слишком новое, ждем 10 секунд")
+                logger.info(
+                    f"{'Бизнес-голосовое сообщение' if is_business else 'Голосовое сообщение'} "
+                    f"слишком новое, ждем 10 секунд"
+                )
                 return
 
             voice_file = await message.voice.get_file()
@@ -265,6 +277,7 @@ class BotManager:
                     temp_file.write(response.content)
                     temp_file.seek(0)
                     
+                    logger.info(f"Отправка голосового сообщения в Whisper для транскрипции")
                     transcript = await self.openai_client.audio.transcriptions.create(
                         file=temp_file,
                         model="whisper-1",
@@ -280,7 +293,7 @@ class BotManager:
                         await message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
 
         except Exception as e:
-            logger.error(f"Ошибка обработки голоса: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки {'бизнес-голосового сообщения' if is_business else 'голосового сообщения'}: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
     async def _process_text(self, chat_id: int, text: str) -> str:
@@ -292,6 +305,9 @@ class BotManager:
                 {"role": "user", "content": text}
             ]
             
+            logger.info(
+                f"Отправка запроса в OpenAI (модель: gpt-4-turbo-preview, чат: {chat_id}): {text}"
+            )
             completion = await self.openai_client.chat.completions.create(
                 model="gpt-4-turbo-preview",
                 messages=messages,
@@ -300,10 +316,11 @@ class BotManager:
             )
             
             response = completion.choices[0].message.content
+            logger.info(f"Получен ответ от OpenAI для чата {chat_id}: {response}")
             self._update_history(chat_id, text, response)
             return response
         except Exception as e:
-            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки текста через OpenAI для чата {chat_id}: {str(e)}", exc_info=True)
             return "⚠️ Ошибка генерации ответа"
 
     def _update_history(self, chat_id: int, text: str, response: str):
@@ -331,9 +348,10 @@ class BotManager:
     async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Глобальный обработчик ошибок"""
         logger.error(f"Необработанная ошибка: {str(context.error)}", exc_info=True)
-        if update and update.message:
+        if update and (update.message or update.business_message):
             try:
-                await update.message.reply_text("⚠️ Произошла внутренняя ошибка")
+                message = update.business_message or update.message
+                await message.reply_text("⚠️ Произошла внутренняя ошибка")
             except Exception as e:
                 logger.error(f"Ошибка отправки сообщения об ошибке: {str(e)}")
 
