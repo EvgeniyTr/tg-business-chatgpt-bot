@@ -275,11 +275,20 @@ bot_manager.start()
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
+        logger.info("Received update: %s", request.get_json())
         bot_manager.process_update(request.get_json())
         return jsonify({"status": "ok"})
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}")
         return jsonify({"status": "error"}), 500
+        
+@app.route('/status')
+def status():
+    return jsonify({
+        "status": "ok",
+        "initialized": bot_manager.initialized.is_set(),
+        "webhook": bot_manager.application.updater.running if bot_manager.application else False
+    })
 
 @app.route('/')
 def home():
