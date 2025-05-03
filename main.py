@@ -1,225 +1,87 @@
 import os
-import asyncio
 import logging
-import threading
-import httpx
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from tempfile import NamedTemporaryFile
-from datetime import datetime, timedelta
-
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    MessageHandler,
-    filters,
-    ContextTypes,
-    CommandHandler,
-)
-from flask import Flask, request, jsonify
-import openai
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils.executor import start_webhook
+from openai import AsyncOpenAI
 
 # Настройка логгирования
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+# Инициализация клиентов
+bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+dp = Dispatcher(bot)
+openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Конфигурация
-MAX_HISTORY = 3
-DELAY_MINUTES = 10
-SYSTEM_PROMPT = """
-Ты - это я, Сергей. Отвечай от моего имени, используя мой стиль общения.
-Основные характеристики:
-- Спокойный, дружелюбный, уверенный в себе
-- Использую лёгкий юмор и уместный сарказм
-- Предлагаю конкретные решения
-"""
+# Конфигурация вебхука
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.getenv("PORT", 10000))
 
-AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
+async def on_startup(dp):
+    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
+    logger.info("🤖 Бот запущен и готов к работе!")
 
-class BotManager:
-    def __init__(self):
-        self.loop = None
-        self.application = None
-        self.executor = ThreadPoolExecutor(max_workers=1)
-        self.initialized = threading.Event()
-        self.openai_client = None
-        self.chat_history = defaultdict(list)
-        self.user_timestamps = {}
+async def on_shutdown(dp):
+    await bot.delete_webhook()
+    logger.info("🛑 Бот остановлен")
 
-    def process_update(self, json_data):
-        if not self.initialized.wait(timeout=10):
-            raise RuntimeError("Таймаут инициализации бота")
-        
-        future = asyncio.run_coroutine_threadsafe(
-            self._process_update(json_data),
-            self.loop
-        )
-        return future.result(timeout=15)
+@dp.message_handler(commands=["start", "help"])
+async def send_welcome(message: types.Message):
+    await message.answer(
+        "🎙️ Привет! Я бот для работы с голосовыми сообщениями.\n\n"
+        "Просто отправь мне голосовое сообщение, и я:\n"
+        "1. Распознаю текст\n"
+        "2. Сгенерирую ответ с помощью GPT-4\n"
+        "3. Пришлю текстовый ответ"
+    )
 
-    async def _process_update(self, json_data):
-        update = Update.de_json(json_data, self.application.bot)
-        await self.application.process_update(update)
-        
-    def start(self):
-        def run_loop():
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-            try:
-                self.loop.run_until_complete(self._initialize())
-                self.initialized.set()
-                self.loop.run_forever()
-            except Exception as e:
-                logger.critical(f"Ошибка: {str(e)}")
-                os._exit(1)
-        self.executor.submit(run_loop)
-
-    async def _initialize(self):
-        self.openai_client = openai.AsyncOpenAI(
-            api_key=os.getenv("OPENAI_API_KEY")
-        )
-        
-        self.application = ApplicationBuilder() \
-            .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
-            .build()
-
-        # Регистрация обработчиков
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            self._handle_message
-        ))
-        self.application.add_handler(CommandHandler("generate_image", self._generate_image))
-        self.application.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
-        self.application.add_error_handler(self._error_handler)
-        
-        await self.application.initialize()
-        await self._setup_webhook()
-
-    async def _check_delay(self, user_id: int):
-        last_message = self.user_timestamps.get(user_id)
-        if last_message and (datetime.now() - last_message).seconds < DELAY_MINUTES * 60:
-            return False
-        self.user_timestamps[user_id] = datetime.now()
-        return True
-
-    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            user_id = update.effective_user.id
-            message = update.message
-            
-            if not await self._check_delay(user_id):
-                return
-
-            text = message.text.strip()
-            
-            if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
-                await self._generate_image_from_text(message, text)
-            else:
-                response = await self._process_text(user_id, text)
-                await message.reply_text(response)
-
-        except Exception as e:
-            logger.error(f"Ошибка обработки: {str(e)}")
-
-        async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        #"""Обработка голосовых сообщений"""
-        try:
-            voice_file = await update.message.voice.get_file()
-            async with httpx.AsyncClient() as client:
-                response = await client.get(voice_file.file_path)
-                with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
-                    temp_file.write(response.content)
-                    transcript = await self.openai_client.audio.transcriptions.create(
-                        file=open(temp_file.name, "rb"),
-                        model="whisper-1",
-                        response_format="text"
-                    )
-                    
-                    if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
-                        await self._generate_image_from_text(update.message, transcript)
-                    else:
-                        response = await self._process_text(update.effective_user.id, transcript)
-                        await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
-        except Exception as e:
-            logger.error(f"Ошибка обработки голоса: {str(e)}")
-            await update.message.reply_text("⚠️ Ошибка распознавания голоса")
-
-    async def _generate_image_from_text(self, message: Update, text: str):
-        """Генерация изображения из текста"""
-        try:
-            prompt = await self._create_image_prompt(text)
-            await self._generate_and_send_image(message, prompt)
-        except Exception as e:
-            logger.error(f"Ошибка генерации: {str(e)}")
-            await message.reply_text("⚠️ Ошибка генерации изображения")
-
-    async def _create_image_prompt(self, text: str) -> str:
-        """Создание промпта для DALL-E через GPT"""
-        messages = [{
-            "role": "system", 
-            "content": "Сгенерируй детальное описание для DALL-E на основе запроса пользователя"
-        }, {
-            "role": "user", 
-            "content": text
-        }]
-        
-        completion = await self.openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=messages,
-            temperature=0.7
-        )
-        return completion.choices[0].message.content
-
-    async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        try:
-            prompt = ' '.join(context.args)
-            await self._generate_and_send_image(update.message, prompt)
-        except Exception as e:
-            await update.message.reply_text("⚠️ Укажите описание для изображения")
-
-    async def _generate_and_send_image(self, message: Update, prompt: str):
-        response = await self.openai_client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024"
-        )
-        await message.reply_photo(response.data[0].url)
-
-    async def _setup_webhook(self):
-        webhook_url = f"{os.getenv('WEBHOOK_URL')}/webhook"
-        await self.application.bot.set_webhook(webhook_url)
-        logger.info(f"Вебхук настроен: {webhook_url}")
-
-    async def _error_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"Ошибка: {context.error}")
-        if update.message:
-            await update.message.reply_text("⚠️ Произошла ошибка")
-
-# Инициализация бота
-bot_manager = BotManager()
-bot_manager.start()
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
+@dp.message_handler(content_types=types.ContentType.VOICE)
+async def handle_voice(message: types.Message):
     try:
-        bot_manager.process_update(request.get_json())
-        return jsonify({"status": "ok"})
+        # Скачивание голосового сообщения
+        voice_file = await message.voice.get_file()
+        file_path = await bot.download_file(voice_file.file_path)
+        
+        # Распознавание речи через Whisper
+        transcript = await openai_client.audio.transcriptions.create(
+            file=("voice.ogg", file_path),
+            model="whisper-1",
+            response_format="text"
+        )
+        
+        # Генерация ответа через GPT-4
+        response = await openai_client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[{
+                "role": "system",
+                "content": "Ты полезный ассистент. Отвечай кратко и по делу."
+            }, {
+                "role": "user",
+                "content": transcript
+            }]
+        )
+        
+        # Отправка результата
+        await message.answer(
+            f"🔊 Распознанный текст:\n{transcript}\n\n"
+            f"💡 Ответ:\n{response.choices[0].message.content}"
+        )
+
     except Exception as e:
-        logger.error(f"Ошибка вебхука: {str(e)}")
-        return jsonify({"status": "error"}), 500
+        logger.error(f"Ошибка: {e}")
+        await message.answer("⚠️ Произошла ошибка при обработке сообщения")
 
-@app.route('/')
-def home():
-    return "Бот работает!"
-
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    if "RENDER" in os.environ:
-        from waitress import serve
-        serve(app, host="0.0.0.0", port=port)
-    else:
-        app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host="0.0.0.0",
+        port=PORT,
+        skip_updates=True
+    )
