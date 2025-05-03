@@ -1,4 +1,3 @@
-Сергей Кажарнович, [02.05.2025 17:32]
 import os
 import asyncio
 import logging
