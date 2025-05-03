@@ -60,6 +60,7 @@ class BotManager:
             "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
             "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
         }
+
     def process_update(self, json_data):
         """Обработка входящего обновления через вебхук"""
         if not self.initialized.wait(timeout=10):
@@ -90,28 +91,58 @@ class BotManager:
         self.executor.submit(run_loop)
 
     async def _initialize(self):
-        self.openai_client = openai.AsyncOpenAI(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        )
-        
-        self.application = ApplicationBuilder() \
-            .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
-            .build()
+        """Инициализация компонентов бота"""
+        try:
+            # Инициализация OpenAI
+            self.openai_client = openai.AsyncOpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            )
+            
+            # Проверка подключения к OpenAI
+            await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=5
+            )
+            logger.info("Успешное подключение к OpenAI API")
 
-        # Регистрация обработчиков
-        self.application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            self._handle_message
-        ))
-        self.application.add_handler(CommandHandler("generate_image", self._generate_image))
-        self.application.add_handler(MessageHandler(filters.VOICE, self._handle_voice))
-        self.application.add_error_handler(self._error_handler)
-        
-        await self.application.initialize()
-        
-        if "RENDER" in os.environ:
-            await self._setup_webhook()
+            # Инициализация Telegram бота
+            self.application = ApplicationBuilder() \
+                .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
+                .build()
+
+            # Регистрация обработчиков
+            self.application.add_handler(CommandHandler("start", self._start_command))
+            self.application.add_handler(CommandHandler("generate_image", self._generate_image))
+            self.application.add_handler(MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                self._handle_message
+            ))
+            self.application.add_handler(MessageHandler(
+                filters.VOICE,
+                self._handle_voice
+            ))
+            self.application.add_error_handler(self._error_handler)
+            
+            await self.application.initialize()
+            
+            if "RENDER" in os.environ:
+                await self._setup_webhook()
+
+        except Exception as e:
+            logger.critical(f"Ошибка инициализации: {str(e)}", exc_info=True)
+            raise
+
+    async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /start"""
+        try:
+            await update.message.reply_text(
+                "🤖 Привет! Я твой AI-ассистент. Отправь мне сообщение, и я отвечу как ты!\n"
+                "Могу также генерировать изображения по ключевым словам."
+            )
+        except Exception as e:
+            logger.error(f"Ошибка обработки /start: {str(e)}", exc_info=True)
 
     async def _check_working_hours(self):
         """Проверка рабочего времени (9:00-18:00 по Москве)"""
@@ -141,11 +172,15 @@ class BotManager:
             user_id = update.effective_user.id
             message = update.message
             
+            # Логирование входящего сообщения
+            logger.info(f"Сообщение от {user_id}: {message.text}")
+            
             if not await self._check_delay(user_id):
+                await message.reply_text("⏳ Пожалуйста, подождите перед отправкой следующего сообщения")
                 return
                 
             if await self._check_working_hours():
-                await message.reply_text("⏰ Сейчас не рабочее время (9:00-18:00 МСК)")
+                await message.reply_text("⏰ Сейчас не рабочее время (9:00-18:00 МСК, Пн-Пт)")
                 return
 
             text = message.text.strip()
@@ -157,62 +192,80 @@ class BotManager:
                 await message.reply_text(response)
 
         except Exception as e:
-            logger.error(f"Ошибка обработки: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
+            await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /generate_image"""
         try:
             prompt = ' '.join(context.args)
+            if not prompt:
+                raise ValueError("Пустой промпт")
             await self._generate_and_send_image(update.message, prompt)
         except Exception as e:
-            await update.message.reply_text("⚠️ Укажите описание для изображения")
+            logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
+            await update.message.reply_text("⚠️ Укажите описание для изображения через пробел после команды")
 
     async def _generate_image_from_text(self, message: Update, text: str):
         """Генерация изображения из текста"""
         try:
             prompt = await self._create_image_prompt(text)
             await self._generate_and_send_image(message, prompt)
+        except openai.APIError as e:
+            logger.error(f"Ошибка OpenAI API: {str(e)}")
+            await message.reply_text("⚠️ Ошибка доступа к API генерации")
         except Exception as e:
-            logger.error(f"Ошибка генерации: {str(e)}")
+            logger.error(f"Ошибка генерации: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка генерации изображения")
 
     async def _generate_and_send_image(self, message: Update, prompt: str):
         """Отправка сгенерированного изображения"""
-        response = await self.openai_client.images.generate(
-            model="dall-e-3",
-            prompt=prompt,
-            size="1024x1024",
-            quality="standard"
-        )
-        await message.reply_photo(response.data[0].url)
+        try:
+            response = await self.openai_client.images.generate(
+                model="dall-e-3",
+                prompt=prompt[:1000],  # Обрезка слишком длинных промптов
+                size="1024x1024",
+                quality="standard"
+            )
+            await message.reply_photo(response.data[0].url)
+        except Exception as e:
+            logger.error(f"Ошибка отправки изображения: {str(e)}")
+            raise
 
     async def _create_image_prompt(self, text: str) -> str:
         """Создание промпта для DALL-E через GPT"""
-        messages = [{
-            "role": "system", 
-            "content": "Сгенерируй детальное описание для DALL-E на основе запроса пользователя"
-        }, {
-            "role": "user", 
-            "content": text
-        }]
-        
-        completion = await self.openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=messages,
-            temperature=0.7
-        )
-        return completion.choices[0].message.content
+        try:
+            messages = [{
+                "role": "system", 
+                "content": "Сгенерируй детальное англоязычное описание для DALL-E на основе запроса пользователя"
+            }, {
+                "role": "user", 
+                "content": text
+            }]
+            
+            completion = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=500
+            )
+            return completion.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Ошибка создания промпта: {str(e)}")
+            return text  # Использовать оригинальный текст как fallback
 
     async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка голосовых сообщений"""
         try:
             voice_file = await update.message.voice.get_file()
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(voice_file.file_path)
                 with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
                     temp_file.write(response.content)
+                    temp_file.seek(0)
+                    
                     transcript = await self.openai_client.audio.transcriptions.create(
-                        file=open(temp_file.name, "rb"),
+                        file=temp_file,
                         model="whisper-1",
                         response_format="text"
                     )
@@ -223,26 +276,34 @@ class BotManager:
                         response = await self._process_text(update.effective_user.id, transcript)
                         await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
         except Exception as e:
-            logger.error(f"Ошибка обработки голоса: {str(e)}")
-            await update.message.reply_text("⚠️ Ошибка распознавания голоса")
+            logger.error(f"Ошибка обработки голоса: {str(e)}", exc_info=True)
+            await update.message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
     async def _process_text(self, user_id: int, text: str) -> str:
         """Обработка текста через GPT с историей"""
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
-            *self.chat_history[user_id][-MAX_HISTORY:],
-            {"role": "user", "content": text}
-        ]
-        
-        completion = await self.openai_client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=messages,
-            temperature=0.7
-        )
-        
-        response = completion.choices[0].message.content
-        self._update_history(user_id, text, response)
-        return response
+        try:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
+                *self.chat_history[user_id][-MAX_HISTORY*2:],
+                {"role": "user", "content": text}
+            ]
+            
+            completion = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000
+            )
+            
+            response = completion.choices[0].message.content
+            self._update_history(user_id, text, response)
+            return response
+        except openai.AuthenticationError as e:
+            logger.critical(f"Ошибка аутентификации OpenAI: {str(e)}")
+            return "🔑 Ошибка авторизации API"
+        except Exception as e:
+            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
+            return "⚠️ Ошибка генерации ответа"
 
     def _update_history(self, user_id: int, text: str, response: str):
         """Обновление истории чата"""
@@ -250,15 +311,17 @@ class BotManager:
             {"role": "user", "content": text},
             {"role": "assistant", "content": response}
         ])
+        # Сохраняем только последние MAX_HISTORY*2 сообщений
         if len(self.chat_history[user_id]) > MAX_HISTORY * 2:
-            self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY * 2:]
+            self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY*2:]
 
     async def _setup_webhook(self):
         """Настройка вебхука для Render"""
         webhook_url = f"{os.getenv('WEBHOOK_URL')}/webhook"
         await self.application.bot.set_webhook(
             url=webhook_url,
-            allowed_updates=["message", "voice"]
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
         )
         logger.info(f"Вебхук настроен: {webhook_url}")
 
@@ -266,7 +329,10 @@ class BotManager:
         """Глобальный обработчик ошибок"""
         logger.error(f"Необработанная ошибка: {context.error}", exc_info=True)
         if update and update.message:
-            await update.message.reply_text("⚠️ Произошла внутренняя ошибка")
+            try:
+                await update.message.reply_text("⚠️ Произошла внутренняя ошибка")
+            except Exception as e:
+                logger.error(f"Ошибка отправки сообщения об ошибке: {str(e)}")
 
 # Инициализация бота
 bot_manager = BotManager()
@@ -275,19 +341,23 @@ bot_manager.start()
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        logger.info("Received update: %s", request.get_json())
-        bot_manager.process_update(request.get_json())
+        data = request.get_json()
+        logger.info(f"Received update: {data}")
+        bot_manager.process_update(data)
         return jsonify({"status": "ok"})
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return jsonify({"status": "error"}), 500
-        
+        logger.error(f"Webhook error: {str(e)}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
 @app.route('/status')
 def status():
     return jsonify({
         "status": "ok",
         "initialized": bot_manager.initialized.is_set(),
-        "webhook": bot_manager.application.updater.running if bot_manager.application else False
+        "webhook_configured": bool(bot_manager.application and bot_manager.application.bot.get_webhook_info().url)
     })
 
 @app.route('/')
@@ -295,9 +365,9 @@ def home():
     return "Telegram Bot is running!"
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 10000))
     if "RENDER" in os.environ:
         from waitress import serve
         serve(app, host="0.0.0.0", port=port)
     else:
-        app.run(host='0.0.0.0', port=port)
+        app.run(host='0.0.0.0', port=port, use_reloader=False)
