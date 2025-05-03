@@ -7,7 +7,6 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
 from datetime import datetime, timedelta
-import pytz
 
 from telegram import Update
 from telegram.ext import (
@@ -32,9 +31,6 @@ app = Flask(__name__)
 # Конфигурация
 MAX_HISTORY = 3
 RESPONSE_DELAY_MINUTES = 10  # Задержка ответа в минутах
-WORKING_HOURS_START = "09:00"  # Начало рабочего времени (Москва)
-WORKING_HOURS_END = "18:00"  # Конец рабочего времени (Москва)
-TIMEZONE = pytz.timezone("Europe/Moscow")
 
 SYSTEM_PROMPT = """
 Ты - это я, {owner_name}. Отвечай от моего имени, используя мой стиль общения.
@@ -120,16 +116,12 @@ class BotManager:
             self.application.add_handler(CommandHandler("start", self._start_command))
             self.application.add_handler(CommandHandler("generate_image", self._generate_image))
             self.application.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
-                self._handle_text_message
+                filters.TEXT & ~filters.COMMAND,
+                self._handle_message
             ))
             self.application.add_handler(MessageHandler(
-                filters.VOICE & filters.ChatType.PRIVATE,
+                filters.VOICE,
                 self._handle_voice_message
-            ))
-            self.application.add_handler(MessageHandler(
-                filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
-                self._handle_business_message
             ))
             
             self.application.add_error_handler(self._error_handler)
@@ -145,14 +137,6 @@ class BotManager:
             logger.critical(f"Критическая ошибка инициализации: {str(e)}", exc_info=True)
             raise
 
-    def _is_working_hours(self):
-        """Проверка, находится ли текущее время в рабочих часах"""
-        now = datetime.now(TIMEZONE)
-        start_time = datetime.strptime(WORKING_HOURS_START, "%H:%M").time()
-        end_time = datetime.strptime(WORKING_HOURS_END, "%H:%M").time()
-        current_time = now.time()
-        return start_time <= current_time <= end_time
-
     async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         try:
@@ -160,45 +144,21 @@ class BotManager:
             logger.info(f"Команда /start от пользователя {user.id}")
             await update.message.reply_text(
                 f"🤖 Привет, {user.first_name}! Я твой персональный AI-ассистент.\n"
-                "Отправь мне сообщение, и я отвечу как ты!\n"
+                "Я буду отвечать на сообщения от твоего имени, если ты не успеешь.\n"
                 "Также могу генерировать изображения по ключевым словам."
             )
         except Exception as e:
             logger.error(f"Ошибка обработки /start: {str(e)}", exc_info=True)
 
-    async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик текстовых сообщений в личных чатах"""
-        try:
-            user = update.effective_user
-            message = update.message
-            logger.info(f"Текстовое сообщение от {user.id}: {message.text}")
-
-            text = message.text.strip()
-            
-            if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
-                await self._generate_image_from_text(message, text)
-            else:
-                response = await self._process_text(user.id, text)
-                await message.reply_text(response)
-
-        except Exception as e:
-            logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
-            await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
-
-    async def _handle_business_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик сообщений в бизнес-чатах"""
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик текстовых сообщений в бизнес-чатах"""
         try:
             message = update.message
             user = update.effective_user
             chat_id = message.chat_id
             message_time = message.date
 
-            logger.info(f"Сообщение в бизнес-чате {chat_id} от {user.id}: {message.text}")
-
-            # Проверка рабочего времени
-            if not self._is_working_hours():
-                logger.info(f"Сообщение получено вне рабочего времени: {message.text}")
-                return
+            logger.info(f"Сообщение в чате {chat_id} от {user.id}: {message.text}")
 
             # Проверка времени сообщения (10 минут задержки)
             now = datetime.now(pytz.UTC)
@@ -212,11 +172,11 @@ class BotManager:
             if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
                 await self._generate_image_from_text(message, text)
             else:
-                response = await self._process_text(user.id, text)
+                response = await self._process_text(chat_id, text)
                 await message.reply_text(response)
 
         except Exception as e:
-            logger.error(f"Ошибка обработки бизнес-сообщения: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,13 +203,13 @@ class BotManager:
             logger.error(f"Ошибка генерации: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка генерации изображения")
 
-    async def _generate_and_send_image(self, message: Update, prompt: str):
+    async def _generate_and_send_image(self, message: Update, text: str):
         """Отправка сгенерированного изображения"""
         try:
-            logger.info(f"Генерация изображения: {prompt}")
+            logger.info(f"Генерация изображения: {text}")
             response = await self.openai_client.images.generate(
                 model="dall-e-3",
-                prompt=prompt[:1000],
+                prompt=text[:1000],
                 size="1024x1024",
                 quality="standard"
             )
@@ -286,7 +246,8 @@ class BotManager:
         try:
             user = update.effective_user
             message = update.message
-            logger.info(f"Голосовое сообщение от {user.id}")
+            chat_id = message.chat_id
+            logger.info(f"Голосовое сообщение от {user.id} в чате {chat_id}")
 
             voice_file = await message.voice.get_file()
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -306,19 +267,19 @@ class BotManager:
                     if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
                         await self._generate_image_from_text(message, transcript)
                     else:
-                        response = await self._process_text(user.id, transcript)
+                        response = await self._process_text(chat_id, transcript)
                         await message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки голоса: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
-    async def _process_text(self, user_id: int, text: str) -> str:
+    async def _process_text(self, chat_id: int, text: str) -> str:
         """Обработка текста через GPT с историей"""
         try:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
-                *self.chat_history[user_id][-MAX_HISTORY*2:],
+                *self.chat_history[chat_id][-MAX_HISTORY*2:],
                 {"role": "user", "content": text}
             ]
             
@@ -330,20 +291,20 @@ class BotManager:
             )
             
             response = completion.choices[0].message.content
-            self._update_history(user_id, text, response)
+            self._update_history(chat_id, text, response)
             return response
         except Exception as e:
             logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
             return "⚠️ Ошибка генерации ответа"
 
-    def _update_history(self, user_id: int, text: str, response: str):
+    def _update_history(self, chat_id: int, text: str, response: str):
         """Обновление истории чата"""
-        self.chat_history[user_id].extend([
+        self.chat_history[chat_id].extend([
             {"role": "user", "content": text},
             {"role": "assistant", "content": response}
         ])
-        if len(self.chat_history[user_id]) > MAX_HISTORY * 2:
-            self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY*2:]
+        if len(self.chat_history[chat_id]) > MAX_HISTORY * 2:
+            self.chat_history[chat_id] = self.chat_history[chat_id][-MAX_HISTORY*2:]
 
     async def _setup_webhook(self):
         """Настройка вебхука"""
@@ -399,5 +360,5 @@ if __name__ == '__main__':
     if "RENDER" in os.environ:
         from waitress import serve
         serve(app, host="0.0.0.0", port=port)
-    else:
+    elsedefinitions:
         app.run(host='0.0.0.0', port=port, use_reloader=False)
