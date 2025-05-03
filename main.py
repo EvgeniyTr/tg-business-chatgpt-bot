@@ -142,11 +142,20 @@ class BotManager:
         try:
             user = update.effective_user
             logger.info(f"Команда /start от пользователя {user.id} ({user.username or user.first_name})")
-            await (update.message or update.business_message).reply_text(
-                f"🤖 Привет, {user.first_name}! Я твой персональный AI-ассистент.\n"
-                "Я буду отвечать на сообщения от твоего имени, если ты не успеешь.\n"
-                "Также могу генерировать изображения по ключевым словам."
-            )
+            message = update.message or update.business_message
+            if update.business_message:
+                await message.reply_text(
+                    f"🤖 Привет, {user.first_name}! Я твой персональный AI-ассистент.\n"
+                    "Я буду отвечать на сообщения от твоего имени, если ты не успеешь.\n"
+                    "Также могу генерировать изображения по ключевым словам.",
+                    business_connection_id=update.business_message.business_connection_id
+                )
+            else:
+                await message.reply_text(
+                    f"🤖 Привет, {user.first_name}! Я твой персональный AI-ассистент.\n"
+                    "Я буду отвечать на сообщения от твоего имени, если ты не успеешь.\n"
+                    "Также могу генерировать изображения по ключевым словам."
+                )
             logger.info(f"Ответ на /start отправлен в чат {user.id}")
         except Exception as e:
             logger.error(f"Ошибка обработки /start: {str(e)}", exc_info=True)
@@ -158,9 +167,11 @@ class BotManager:
             if update.business_message:
                 message = update.business_message
                 is_business = True
+                business_connection_id = message.business_connection_id
             else:
                 message = update.message
                 is_business = False
+                business_connection_id = None
 
             user = update.effective_user
             chat_id = message.chat_id
@@ -171,17 +182,20 @@ class BotManager:
                 f"{'Бизнес-сообщение' if is_business else 'Сообщение'} в чате {chat_id} "
                 f"от {user.id} ({user.username or user.first_name}): {text} "
                 f"(время: {message_time})"
+                f"{' бизнес-соединение: ' + business_connection_id if is_business else ''}"
             )
 
             # Запускаем асинхронную задачу с задержкой
-            asyncio.create_task(self._delayed_message_processing(message, text, chat_id, is_business))
+            asyncio.create_task(self._delayed_message_processing(
+                message, text, chat_id, is_business, business_connection_id
+            ))
             logger.info(f"Запущена задача обработки сообщения с задержкой 10 секунд для чата {chat_id}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки {'бизнес-сообщения' if is_business else 'сообщения'}: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
 
-    async def _delayed_message_processing(self, message, text: str, chat_id: int, is_business: bool):
+    async def _delayed_message_processing(self, message, text: str, chat_id: int, is_business: bool, business_connection_id: str = None):
         """Обработка сообщения с задержкой 10 секунд"""
         try:
             # Ждем 10 секунд
@@ -193,10 +207,13 @@ class BotManager:
             )
 
             if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
-                await self._generate_image_from_text(message, text)
+                await self._generate_image_from_text(message, text, business_connection_id)
             else:
                 response = await self._process_text(chat_id, text)
-                await message.reply_text(response)
+                if is_business:
+                    await message.reply_text(response, business_connection_id=business_connection_id)
+                else:
+                    await message.reply_text(response)
                 logger.info(f"Ответ отправлен в чат {chat_id}: {response}")
 
         except Exception as e:
@@ -213,7 +230,9 @@ class BotManager:
             if not prompt:
                 raise ValueError("Пустой промпт")
                 
-            await self._generate_and_send_image(update.message or update.business_message, prompt)
+            message = update.message or update.business_message
+            business_connection_id = update.business_message.business_connection_id if update.business_message else None
+            await self._generate_and_send_image(message, prompt, business_connection_id)
             logger.info(f"Изображение отправлено в чат {user.id}")
         except Exception as e:
             logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
@@ -221,16 +240,16 @@ class BotManager:
                 "⚠️ Укажите описание для изображения через пробел после команды"
             )
 
-    async def _generate_image_from_text(self, message: Update, text: str):
+    async def _generate_image_from_text(self, message: Update, text: str, business_connection_id: str = None):
         """Генерация изображения из текста"""
         try:
             prompt = await self._create_image_prompt(text)
-            await self._generate_and_send_image(message, prompt)
+            await self._generate_and_send_image(message, prompt, business_connection_id)
         except Exception as e:
             logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка генерации изображения")
 
-    async def _generate_and_send_image(self, message: Update, prompt: str):
+    async def _generate_and_send_image(self, message: Update, prompt: str, business_connection_id: str = None):
         """Отправка сгенерированного изображения"""
         try:
             logger.info(f"Генерация изображения с промптом: {prompt}")
@@ -240,7 +259,10 @@ class BotManager:
                 size="1024x1024",
                 quality="standard"
             )
-            await message.reply_photo(response.data[0].url)
+            if business_connection_id:
+                await message.reply_photo(response.data[0].url, business_connection_id=business_connection_id)
+            else:
+                await message.reply_photo(response.data[0].url)
             logger.info(f"Изображение успешно отправлено в чат {message.chat_id}")
         except Exception as e:
             logger.error(f"Ошибка отправки изображения: {str(e)}")
@@ -278,9 +300,11 @@ class BotManager:
             if update.business_message:
                 message = update.business_message
                 is_business = True
+                business_connection_id = message.business_connection_id
             else:
                 message = update.message
                 is_business = False
+                business_connection_id = None
 
             user = update.effective_user
             chat_id = message.chat_id
@@ -290,17 +314,18 @@ class BotManager:
                 f"{'Бизнес-голосовое сообщение' if is_business else 'Голосовое сообщение'} "
                 f"в чате {chat_id} от {user.id} ({user.username or user.first_name}) "
                 f"(время: {message_time})"
+                f"{' бизнес-соединение: ' + business_connection_id if is_business else ''}"
             )
 
             # Запускаем асинхронную задачу с задержкой
-            asyncio.create_task(self._delayed_voice_processing(message, chat_id, is_business))
+            asyncio.create_task(self._delayed_voice_processing(message, chat_id, is_business, business_connection_id))
             logger.info(f"Запущена задача обработки голосового сообщения с задержкой 10 секунд для чата {chat_id}")
 
         except Exception as e:
             logger.error(f"Ошибка обработки {'бизнес-голосового сообщения' if is_business else 'голосового сообщения'}: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
-    async def _delayed_voice_processing(self, message, chat_id: int, is_business: bool):
+    async def _delayed_voice_processing(self, message, chat_id: int, is_business: bool, business_connection_id: str = None):
         """Обработка голосового сообщения с задержкой 10 секунд"""
         try:
             # Ждем 10 секунд
@@ -327,10 +352,13 @@ class BotManager:
                 logger.info(f"Распознанный текст в чате {chat_id}: {transcript}")
                 
                 if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
-                    await self._generate_image_from_text(message, transcript)
+                    await self._generate_image_from_text(message, transcript, business_connection_id)
                 else:
                     response = await self._process_text(chat_id, transcript)
-                    await message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
+                    if is_business:
+                        await message.reply_text(response, business_connection_id=business_connection_id)
+                    else:
+                        await message.reply_text(response)
                     logger.info(f"Ответ на голосовое сообщение отправлен в чат {chat_id}: {response}")
 
         except Exception as e:
