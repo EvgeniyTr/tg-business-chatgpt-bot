@@ -1,19 +1,21 @@
 import os
-import logging
 import asyncio
-from datetime import datetime, timedelta
+import logging
+import threading
 from collections import defaultdict
-from tempfile import NamedTemporaryFile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+import pytz
+import httpx
 
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import Message, FSInputFile
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-import httpx
+
 from openai import AsyncOpenAI
-import pytz
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -37,25 +39,100 @@ AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", 
 
 class BotManager:
     def __init__(self):
-        self.bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"), parse_mode=ParseMode.HTML)
-        self.dp = Dispatcher(storage=MemoryStorage())
-        self.router = Router()
-        self.openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.loop = None
+        self.dispatcher = None
+        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.initialized = threading.Event()
+        self.openai_client = None
         self.chat_history = defaultdict(list)
-        self.user_timestamps = {}
-        
+        self.bot = None
+
         self.owner_info = {
             "owner_name": "Сергей",
-            "owner_style": "Спокойный, дружелюбный, уверенный в себе...",
-            "owner_details": "Предпочитаю говорить по делу..."
+            "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
+            "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
         }
-        
-        self._register_handlers()
 
-    def _register_handlers(self):
-        self.router.message.register(self._handle_text, F.text)
-        self.router.message.register(self._handle_voice, F.voice)
-        self.dp.include_router(self.router)
+    def run(self):
+        def run_loop():
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            try:
+                self.loop.run_until_complete(self._init_bot())
+                self.initialized.set()
+                self.loop.run_forever()
+            except Exception as e:
+                logger.critical(f"Ошибка запуска: {e}", exc_info=True)
+                os._exit(1)
+
+        self.executor.submit(run_loop)
+
+    async def _init_bot(self):
+        logger.info("Инициализация OpenAI...")
+        self.openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        logger.info("Создание Telegram Bot...")
+        self.bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"), parse_mode=ParseMode.HTML)
+        self.dispatcher = Dispatcher(storage=MemoryStorage())
+
+        self.dispatcher.message.register(self.handle_message, F.text)
+
+        logger.info("Настройка webhook...")
+        if os.getenv("RENDER"):
+            await self.bot.set_webhook(f"{os.getenv('WEBHOOK_URL')}/webhook")
+
+    async def handle_message(self, message: Message):
+        user_id = message.from_user.id
+        text = message.text.strip()
+
+        logger.info(f"Сообщение от {user_id}: {text}")
+
+        # Пропускаем, если недавно отвечали
+        if not await self._check_delay(user_id):
+            return
+
+        # Часы работы
+        if not await self._check_working_hours():
+            await message.answer("⏰ Сейчас не рабочее время (9:00–18:00 МСК)")
+            return
+
+        # Генерация картинки
+        if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
+            await message.answer("🔧 Генерация изображений пока недоступна")
+            return
+
+        # Ответ от GPT
+        response = await self._generate_response(user_id, text)
+        await message.answer(response + "\n\n_Ответ от AI ассистента_", parse_mode=ParseMode.MARKDOWN)
+
+    async def _generate_response(self, user_id: int, user_message: str) -> str:
+        history = self.chat_history[user_id][-MAX_HISTORY:]
+
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)}
+        ] + history + [
+            {"role": "user", "content": user_message}
+        ]
+
+        try:
+            completion = await self.openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                temperature=0.7
+            )
+            reply = completion.choices[0].message.content
+            self._update_history(user_id, user_message, reply)
+            return reply
+        except Exception as e:
+            logger.error(f"Ошибка GPT: {e}")
+            return "⚠️ Ошибка обработки запроса"
+
+    def _update_history(self, user_id: int, user_text: str, bot_reply: str):
+        self.chat_history[user_id].extend([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": bot_reply}
+        ])
+        self.chat_history[user_id] = self.chat_history[user_id][-MAX_HISTORY * 2:]
 
     async def _check_working_hours(self):
         tz = pytz.timezone("Europe/Moscow")
@@ -63,105 +140,30 @@ class BotManager:
         return now.weekday() < 5 and 9 <= now.hour < 18
 
     async def _check_delay(self, user_id: int):
-        last_time = self.user_timestamps.get(user_id)
-        if last_time and (datetime.now() - last_time) < timedelta(minutes=DELAY_MINUTES):
-            return False
-        self.user_timestamps[user_id] = datetime.now()
         return True
 
-    async def _handle_text(self, message: Message):
-        user_id = message.from_user.id
-        if not await self._check_delay(user_id):
-            return await message.answer("⏳ Подождите перед следующим запросом")
-        
-        if not await self._check_working_hours():
-            return await message.answer("⏰ Сейчас не рабочее время (9:00-18:00 МСК)")
-        
-        if any(word in message.text.lower() for word in AUTO_GENERATION_KEYWORDS):
-            await self._generate_image(message)
-        else:
-            reply = await self._ask_gpt(user_id, message.text)
-            await message.answer(reply)
+bot_manager = BotManager()
+bot_manager.run()
 
-    async def _handle_voice(self, message: Message):
-        try:
-            file = await message.voice.get_file()
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(f"https://api.telegram.org/file/bot{os.getenv('TELEGRAM_BOT_TOKEN')}/{file.file_path}")
-                
-                with NamedTemporaryFile(suffix=".ogg") as tmp:
-                    tmp.write(resp.content)
-                    transcript = await self.openai_client.audio.transcriptions.create(
-                        file=open(tmp.name, "rb"),
-                        model="whisper-1"
-                    )
-                    
-            await self._handle_text(Message(
-                text=transcript.text,
-                chat=message.chat,
-                from_user=message.from_user
-            ))
-            
-        except Exception as e:
-            logger.error(f"Voice error: {e}")
-            await message.answer("⚠️ Ошибка обработки голоса")
+# Aiohttp сервер для webhook
+async def webhook_handler(request):
+    try:
+        data = await request.json()
+        await bot_manager.dispatcher.feed_raw_update(data)
+        return web.Response(text="ok")
+    except Exception as e:
+        logger.error(f"Ошибка webhook: {e}", exc_info=True)
+        return web.Response(status=500)
 
-    async def _generate_image(self, message: Message):
-        try:
-            response = await self.openai_client.images.generate(
-                model="dall-e-3",
-                prompt=message.text,
-                size="1024x1024"
-            )
-            await message.answer_photo(response.data[0].url)
-        except Exception as e:
-            logger.error(f"Image error: {e}")
-            await message.answer("⚠️ Ошибка генерации изображения")
-
-    async def _ask_gpt(self, user_id: int, text: str) -> str:
-        history = self.chat_history[user_id][-MAX_HISTORY*2:]
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
-            *history,
-            {"role": "user", "content": text}
-        ]
-        
-        response = await self.openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            temperature=0.7
-        )
-        
-        reply = response.choices[0].message.content
-        self.chat_history[user_id].extend([
-            {"role": "user", "content": text},
-            {"role": "assistant", "content": reply}
-        ])
-        
-        return reply
-
-async def on_startup(bot: Bot):
-    await bot.set_webhook(
-        url=f"{os.getenv('WEBHOOK_URL')}/webhook",
-        drop_pending_updates=True
-    )
-
-async def main():
-    bot_manager = BotManager()
-    
+async def init_app():
     app = web.Application()
-    app["bot"] = bot_manager.bot
-    
-    webhook_handler = SimpleRequestHandler(
-        dispatcher=bot_manager.dp,
-        bot=bot_manager.bot
-    )
-    
-    webhook_handler.register(app, path="/webhook")
-    setup_application(app, bot_manager.dp)
-    
-    await on_startup(bot_manager.bot)
+    app.router.add_post("/webhook", webhook_handler)
     return app
 
-if __name__ == "__main__":
-    web.run_app(main(), port=int(os.getenv("PORT", 10000)), host="0.0.0.0")
+if __name__ == '__main__':
+    import sys
+    if os.getenv("RENDER"):
+        from waitress import serve
+        serve(web.run_app(init_app(), port=int(os.getenv("PORT", 10000))))
+    else:
+        web.run_app(init_app(), port=int(os.getenv("PORT", 5000)))
