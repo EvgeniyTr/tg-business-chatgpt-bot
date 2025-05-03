@@ -6,12 +6,11 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import pytz
-import httpx
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
@@ -23,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 MAX_HISTORY = 3
-DELAY_MINUTES = 10
+DELAY_MINUTES = 1
 SYSTEM_PROMPT = """
 Ты - это я, {owner_name}. Отвечай от моего имени, используя мой стиль общения.
 Основные характеристики:
@@ -69,7 +68,10 @@ class BotManager:
 
     async def _init_bot(self):
         logger.info("Инициализация OpenAI...")
-        self.openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.openai_client = AsyncOpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            base_url="https://api.openai.com/v1"
+        )
 
         logger.info("Создание Telegram Bot...")
         self.bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"), parse_mode=ParseMode.HTML)
@@ -87,21 +89,17 @@ class BotManager:
 
         logger.info(f"Сообщение от {user_id}: {text}")
 
-        # Пропускаем, если недавно отвечали
         if not await self._check_delay(user_id):
             return
 
-        # Часы работы
         if not await self._check_working_hours():
             await message.answer("⏰ Сейчас не рабочее время (9:00–18:00 МСК)")
             return
 
-        # Генерация картинки
         if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
             await message.answer("🔧 Генерация изображений пока недоступна")
             return
 
-        # Ответ от GPT
         response = await self._generate_response(user_id, text)
         await message.answer(response + "\n\n_Ответ от AI ассистента_", parse_mode=ParseMode.MARKDOWN)
 
@@ -158,12 +156,13 @@ async def webhook_handler(request):
 async def init_app():
     app = web.Application()
     app.router.add_post("/webhook", webhook_handler)
+    setup_application(app, bot_manager.dispatcher, bot=bot_manager.bot)
     return app
 
 if __name__ == '__main__':
     import sys
     if os.getenv("RENDER"):
         from waitress import serve
-        serve(web.run_app(init_app(), port=int(os.getenv("PORT", 10000))))
+        web.run_app(init_app(), port=int(os.getenv("PORT", 10000)))
     else:
         web.run_app(init_app(), port=int(os.getenv("PORT", 5000)))
