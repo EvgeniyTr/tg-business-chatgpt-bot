@@ -30,7 +30,7 @@ app = Flask(__name__)
 
 # Конфигурация
 MAX_HISTORY = 3
-RESPONSE_DELAY_MINUTES = 10  # Задержка ответа в минутах
+RESPONSE_DELAY_SECONDS = 10  # Задержка ответа в секундах
 
 SYSTEM_PROMPT = """
 Ты - это я, {owner_name}. Отвечай от моего имени, используя мой стиль общения.
@@ -160,11 +160,11 @@ class BotManager:
 
             logger.info(f"Сообщение в чате {chat_id} от {user.id}: {message.text}")
 
-            # Проверка времени сообщения (10 минут задержки)
+            # Проверка времени сообщения (10 секунд задержки)
             now = datetime.now(pytz.UTC)
             time_diff = now - message_time
-            if time_diff.total_seconds() < RESPONSE_DELAY_MINUTES * 60:
-                logger.info(f"Сообщение слишком новое, ждем 10 минут: {message.text}")
+            if time_diff.total_seconds() < RESPONSE_DELAY_SECONDS:
+                logger.info(f"Сообщение слишком новое, ждем 10 секунд: {message.text}")
                 return
 
             text = message.text.strip()
@@ -203,13 +203,13 @@ class BotManager:
             logger.error(f"Ошибка генерации: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка генерации изображения")
 
-    async def _generate_and_send_image(self, message: Update, text: str):
+    async def _generate_and_send_image(self, message: Update, prompt: str):
         """Отправка сгенерированного изображения"""
         try:
-            logger.info(f"Генерация изображения: {text}")
+            logger.info(f"Генерация изображения: {prompt}")
             response = await self.openai_client.images.generate(
                 model="dall-e-3",
-                prompt=text[:1000],
+                prompt=prompt[:1000],
                 size="1024x1024",
                 quality="standard"
             )
@@ -247,7 +247,16 @@ class BotManager:
             user = update.effective_user
             message = update.message
             chat_id = message.chat_id
+            message_time = message.date
+
             logger.info(f"Голосовое сообщение от {user.id} в чате {chat_id}")
+
+            # Проверка времени сообщения (10 секунд задержки)
+            now = datetime.now(pytz.UTC)
+            time_diff = now - message_time
+            if time_diff.total_seconds() < RESPONSE_DELAY_SECONDS:
+                logger.info(f"Голосовое сообщение слишком новое, ждем 10 секунд")
+                return
 
             voice_file = await message.voice.get_file()
             async with httpx.AsyncClient(timeout=30.0) as client:
