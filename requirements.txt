@@ -1,5 +1,6 @@
-aiogram==2.25.1
-openai>=1.0
-python-dotenv==1.0.0
-httpx==0.25.0
-ffmpeg-python==0.2.0
+aiogram==3.4.1
+openai==1.6.1
+aiohttp
+httpx
+pytz
+waitress
