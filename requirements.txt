@@ -1,6 +1,6 @@
 aiogram==3.4.1
-openai==1.16.1
+openai==1.16.1  # Можно оставить текущую версию, но лучше обновить
 aiohttp
 pytz
-httpx
+httpx==0.27.0   # Фиксируем версию httpx
 waitress
