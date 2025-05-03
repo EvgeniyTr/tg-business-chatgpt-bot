@@ -1,7 +1,25 @@
 import os
 import asyncio
 import logging
-import threading# Настройка логгирования
+import threading
+import httpx
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from tempfile import NamedTemporaryFile
+from datetime import datetime, timezone
+
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    CommandHandler,
+)
+from flask import Flask, request, jsonify
+import openai
+
+# Настройка логгирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
