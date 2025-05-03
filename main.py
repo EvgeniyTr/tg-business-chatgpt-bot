@@ -6,7 +6,7 @@ import httpx
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 from telegram import Update
@@ -31,7 +31,6 @@ app = Flask(__name__)
 
 # Конфигурация
 MAX_HISTORY = 3
-DELAY_MINUTES = 10
 SYSTEM_PROMPT = """
 Ты - это я, {owner_name}. Отвечай от моего имени, используя мой стиль общения.
 Основные характеристики:
@@ -53,7 +52,6 @@ class BotManager:
         self.initialized = threading.Event()
         self.openai_client = None
         self.chat_history = defaultdict(list)
-        self.user_timestamps = {}
         
         self.owner_info = {
             "owner_name": "Сергей",
@@ -108,32 +106,18 @@ class BotManager:
                 timeout=30.0
             )
             
-            # Проверка подключения к OpenAI
-            await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=[{"role": "user", "content": "test"}],
-                max_tokens=5
-            )
-            logger.info("Успешное подключение к OpenAI API")
-
             # Инициализация Telegram бота
             self.application = ApplicationBuilder() \
                 .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
-                .http_version("1.1") \
-                .get_updates_http_version("1.1") \
                 .build()
 
             # Регистрация обработчиков
             self.application.add_handler(CommandHandler("start", self._start_command))
             self.application.add_handler(CommandHandler("generate_image", self._generate_image))
-            
-            # Основной обработчик сообщений
             self.application.add_handler(MessageHandler(
                 filters.TEXT & ~filters.COMMAND,
                 self._handle_text_message
             ))
-            
-            # Обработчик голосовых сообщений
             self.application.add_handler(MessageHandler(
                 filters.VOICE,
                 self._handle_voice_message
@@ -165,60 +149,18 @@ class BotManager:
         except Exception as e:
             logger.error(f"Ошибка обработки /start: {str(e)}", exc_info=True)
 
-    async def _check_working_hours(self):
-        """Проверка рабочего времени (9:00-18:00 по Москве)"""
-        try:
-            tz = pytz.timezone("Europe/Moscow")
-            now = datetime.now(tz)
-            
-            if now.weekday() >= 5:
-                return False
-            
-            start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
-            end_time = now.replace(hour=18, minute=0, second=0, microsecond=0)
-            return start_time <= now < end_time
-        except Exception as e:
-            logger.error(f"Ошибка проверки времени: {str(e)}")
-            return True
-
-    async def _check_delay(self, user_id: int):
-        """Проверка задержки между сообщениями"""
-        try:
-            last_message = self.user_timestamps.get(user_id)
-            if last_message:
-                delay = (datetime.now() - last_message).total_seconds() / 60
-                if delay < DELAY_MINUTES:
-                    return False
-            self.user_timestamps[user_id] = datetime.now()
-            return True
-        except Exception as e:
-            logger.error(f"Ошибка проверки задержки: {str(e)}")
-            return True
-
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Основной обработчик текстовых сообщений"""
+        """Обработчик текстовых сообщений"""
         try:
             user = update.effective_user
             message = update.message
             logger.info(f"Текстовое сообщение от {user.id}: {message.text}")
 
-            # Проверка задержки
-            if not await self._check_delay(user.id):
-                await message.reply_text("⏳ Пожалуйста, подождите перед отправкой следующего сообщения")
-                return
-
-            # Проверка рабочего времени
-            if await self._check_working_hours():
-                await message.reply_text("⏰ Сейчас не рабочее время (9:00-18:00 МСК, Пн-Пт)")
-                return
-
             text = message.text.strip()
             
-            # Генерация изображения
             if any(kw in text.lower() for kw in AUTO_GENERATION_KEYWORDS):
                 await self._generate_image_from_text(message, text)
             else:
-                # Генерация текстового ответа
                 response = await self._process_text(user.id, text)
                 await message.reply_text(response)
 
@@ -246,9 +188,6 @@ class BotManager:
         try:
             prompt = await self._create_image_prompt(text)
             await self._generate_and_send_image(message, prompt)
-        except openai.APIError as e:
-            logger.error(f"Ошибка OpenAI API: {str(e)}")
-            await message.reply_text("⚠️ Ошибка доступа к API генерации")
         except Exception as e:
             logger.error(f"Ошибка генерации: {str(e)}", exc_info=True)
             await message.reply_text("⚠️ Ошибка генерации изображения")
@@ -342,9 +281,6 @@ class BotManager:
             response = completion.choices[0].message.content
             self._update_history(user_id, text, response)
             return response
-        except openai.AuthenticationError as e:
-            logger.critical(f"Ошибка аутентификации OpenAI: {str(e)}")
-            return "🔑 Ошибка авторизации API"
         except Exception as e:
             logger.error(f"Ошибка обработки текста: {str(e)}", exc_info=True)
             return "⚠️ Ошибка генерации ответа"
@@ -364,9 +300,7 @@ class BotManager:
             webhook_url = f"{os.getenv('WEBHOOK_URL')}/webhook"
             await self.application.bot.set_webhook(
                 url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                secret_token=None
+                allowed_updates=Update.ALL_TYPES
             )
             logger.info(f"Вебхук успешно настроен: {webhook_url}")
         except Exception as e:
