@@ -360,5 +360,5 @@ if __name__ == '__main__':
     if "RENDER" in os.environ:
         from waitress import serve
         serve(app, host="0.0.0.0", port=port)
-    elsedefinitions:
+    else definitions:
         app.run(host='0.0.0.0', port=port, use_reloader=False)
