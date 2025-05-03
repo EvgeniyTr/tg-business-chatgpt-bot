@@ -125,6 +125,55 @@ class BotManager:
         except Exception as e:
             logger.error(f"Ошибка обработки: {str(e)}")
 
+        async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка голосовых сообщений"""
+        try:
+            voice_file = await update.message.voice.get_file()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(voice_file.file_path)
+                with NamedTemporaryFile(delete=True, suffix=".ogg") as temp_file:
+                    temp_file.write(response.content)
+                    transcript = await self.openai_client.audio.transcriptions.create(
+                        file=open(temp_file.name, "rb"),
+                        model="whisper-1",
+                        response_format="text"
+                    )
+                    
+                    if any(kw in transcript.lower() for kw in AUTO_GENERATION_KEYWORDS):
+                        await self._generate_image_from_text(update.message, transcript)
+                    else:
+                        response = await self._process_text(update.effective_user.id, transcript)
+                        await update.message.reply_text(f"🎤 Распознано: {transcript}\n\n📝 Ответ: {response}")
+        except Exception as e:
+            logger.error(f"Ошибка обработки голоса: {str(e)}")
+            await update.message.reply_text("⚠️ Ошибка распознавания голоса")
+
+    async def _generate_image_from_text(self, message: Update, text: str):
+        """Генерация изображения из текста"""
+        try:
+            prompt = await self._create_image_prompt(text)
+            await self._generate_and_send_image(message, prompt)
+        except Exception as e:
+            logger.error(f"Ошибка генерации: {str(e)}")
+            await message.reply_text("⚠️ Ошибка генерации изображения")
+
+    async def _create_image_prompt(self, text: str) -> str:
+        """Создание промпта для DALL-E через GPT"""
+        messages = [{
+            "role": "system", 
+            "content": "Сгенерируй детальное описание для DALL-E на основе запроса пользователя"
+        }, {
+            "role": "user", 
+            "content": text
+        }]
+        
+        completion = await self.openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=messages,
+            temperature=0.7
+        )
+        return completion.choices[0].message.content
+
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             prompt = ' '.join(context.args)
