@@ -126,7 +126,7 @@ class BotManager:
             logger.error(f"Ошибка обработки: {str(e)}")
 
         async def _handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка голосовых сообщений"""
+        #"""Обработка голосовых сообщений"""
         try:
             voice_file = await update.message.voice.get_file()
             async with httpx.AsyncClient() as client:
