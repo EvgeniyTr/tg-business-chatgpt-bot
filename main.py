@@ -10,19 +10,17 @@ from openai import AsyncOpenAI
 from pydantic_settings import BaseSettings
 from redis.asyncio import Redis
 
-# Настройка логгирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация через Pydantic
 class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     OPENAI_API_KEY: str
     WEBHOOK_URL: str
-    ADMIN_ID: int
+    ADMIN_ID: int | None = None
     REDIS_HOST: str = "localhost"
     DELAY_MINUTES: int = 10
 
@@ -32,21 +30,18 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Инициализация клиентов
 bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 redis = Redis(host=settings.REDIS_HOST)
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-# Системный промпт
 SYSTEM_PROMPT = """
-Ты - цифровой ассистент Сергея. Отвечай от его имени, используя его стиль общения:
+Ты - цифровой ассистент Сергея. Отвечай от его имени:
 - Спокойный, дружелюбный, уверенный
-- Используй легкий юмор и сарказм где уместно
+- Используй легкий юмор где уместно
 - Предлагай решения и будь конкретным
 """
 
-# Middleware для проверки задержки
 class ThrottlingMiddleware:
     async def __call__(self, handler, event: Message, data):
         user_id = event.from_user.id
@@ -61,12 +56,11 @@ class ThrottlingMiddleware:
         await redis.set(f"user:{user_id}", datetime.now().isoformat())
         return await handler(event, data)
 
-# Обработчики
 @dp.message(Command("start"))
 async def start_handler(message: Message):
     await message.answer(
-        "🤖 Привет! Я цифровой ассистент Сергея. "
-        "Могу ответить на ваши вопросы или сгенерировать изображение по запросу."
+        "🤖 Привет! Я цифровой ассистент. "
+        "Могу ответить на вопросы или сгенерировать изображение."
     )
 
 @dp.message(Command("generate_image"))
@@ -85,12 +79,11 @@ async def generate_image(message: Message):
         await message.answer_photo(response.data[0].url)
     except Exception as e:
         logger.error(f"Image generation error: {e}")
-        await message.answer("⚠️ Ошибка генерации изображения")
+        await message.answer("⚠️ Ошибка генерации")
 
 @dp.message()
 async def message_handler(message: Message):
     try:
-        # Генерация текста
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": message.text}
@@ -106,17 +99,8 @@ async def message_handler(message: Message):
         
     except Exception as e:
         logger.error(f"Chat error: {e}")
-        await message.answer("⚠️ Произошла ошибка при обработке запроса")
+        await message.answer("⚠️ Ошибка обработки запроса")
 
-# Вебхук для Render
-async def on_startup():
-    await bot.set_webhook(
-        url=f"{settings.WEBHOOK_URL}/webhook",
-        drop_pending_updates=True
-    )
-    logger.info("Bot started")
-
-# Конфигурация Flask
 from flask import Flask, request
 
 app = Flask(__name__)
@@ -132,7 +116,6 @@ async def webhook():
         return {"status": "error"}, 500
 
 if __name__ == "__main__":
-    dp.startup.register(on_startup)
     dp.update.middleware(ThrottlingMiddleware())
     
     if "RENDER" in os.environ:
