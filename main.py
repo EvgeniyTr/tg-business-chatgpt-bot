@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Конфигурация
-MAX_HISTORY = 3
+MAX_HISTORY = 5
 RESPONSE_DELAY_SECONDS = 10  # Задержка ответа в секундах
 
 SYSTEM_PROMPT = """
@@ -49,6 +49,7 @@ SYSTEM_PROMPT = """
 4. Не используй шаблонные фразы. Будь естественным.
 5. Если есть путь сделать лучше — предложи.
 6. Покажи, что я в теме, что у меня есть опыт и я делюсь им осознанно.
+7. Будь краток и сдержен.
 """
 
 AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
@@ -61,6 +62,8 @@ class BotManager:
         self.initialized = threading.Event()
         self.openai_client = None
         self.chat_history = defaultdict(list)
+        self.owner_user_id = int(os.getenv("OWNER_USER_ID", "0"))  # Твой Telegram user_id
+        self.bot_id = None  # Будет установлен в _initialize
         
         self.owner_info = {
             "owner_name": "Сергей",
@@ -119,6 +122,11 @@ class BotManager:
             self.application = ApplicationBuilder() \
                 .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
                 .build()
+
+            # Получаем ID бота
+            bot_info = await self.application.bot.get_me()
+            self.bot_id = bot_info.id
+            logger.info(f"ID бота: {self.bot_id}")
 
             # Регистрация обработчиков
             self.application.add_handler(CommandHandler("start", self._start_command))
@@ -186,6 +194,14 @@ class BotManager:
             chat_id = message.chat_id
             message_time = message.date
             text = message.text.strip()
+
+            # Проверяем, отправлено ли сообщение тобой или ботом
+            if user.id == self.owner_user_id or user.id == self.bot_id:
+                logger.info(
+                    f"Пропущено сообщение от {'владельца' if user.id == self.owner_user_id else 'бота'} "
+                    f"(ID: {user.id}) в чате {chat_id}: {text}"
+                )
+                return
 
             logger.info(
                 f"{'Бизнес-сообщение' if is_business else 'Сообщение'} в чате {chat_id} "
@@ -340,6 +356,14 @@ class BotManager:
             user = update.effective_user
             chat_id = message.chat_id
             message_time = message.date
+
+            # Проверяем, отправлено ли сообщение тобой или ботом
+            if user.id == self.owner_user_id or user.id == self.bot_id:
+                logger.info(
+                    f"Пропущено голосовое сообщение от {'владельца' if user.id == self.owner_user_id else 'бота'} "
+                    f"(ID: {user.id}) в чате {chat_id}"
+                )
+                return
 
             logger.info(
                 f"{'Бизнес-голосовое сообщение' if is_business else 'Голосовое сообщение'} "
