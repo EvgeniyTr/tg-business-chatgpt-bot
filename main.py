@@ -93,7 +93,7 @@ class BotManager:
             self.image_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://api.openai.com/v1", timeout=30.0)
             logger.info("Проверка openrouter.ai...")
             test_completion = await self.openrouter_client.chat.completions.create(
-                model="tngtech/deepseek-r1t-chimera:free",
+                model="google/gemini-2.5-pro-exp-03-25",
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Привет, тест."}],
                 temperature=0.7,
                 max_tokens=150
