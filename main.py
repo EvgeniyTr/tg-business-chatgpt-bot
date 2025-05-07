@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 import threading
+import httpx
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -57,8 +58,8 @@ class BotManager:
         self.application = None
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.initialized = threading.Event()
-        self.openai_client = None  # Для обработки текста через openrouter.ai
-        self.image_client = None   # Отдельный клиент для OpenAI (DALL-E)
+        self.openrouter_client = None  # Для обработки текста через openrouter.ai
+        self.image_client = None      # Отдельный клиент для OpenAI (DALL-E и Whisper)
         self.chat_history = defaultdict(list)
         self.owner_user_id = int(os.getenv("OWNER_USER_ID", "0"))  # Твой Telegram user_id
         self.bot_id = None  # Будет установлен в _initialize
@@ -110,19 +111,29 @@ class BotManager:
         """Инициализация компонентов бота"""
         try:
             # Инициализация клиента для openrouter.ai (текстовая обработка)
-            self.openai_client = AsyncOpenAI(
+            self.openrouter_client = AsyncOpenAI(
                 base_url="https://openrouter.ai/api/v1",
                 api_key=os.getenv("OPENROUTER_API_KEY"),
                 timeout=30.0
             )
             
-            # Инициализация клиента для OpenAI (генерация изображений)
+            # Инициализация клиента для OpenAI (генерация изображений и транскрипция голоса)
             self.image_client = AsyncOpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
                 base_url="https://api.openai.com/v1",
                 timeout=30.0
             )
             
+            # Проверка подключения к openrouter.ai
+            logger.info("Проверка подключения к openrouter.ai...")
+            test_completion = await self.openrouter_client.chat.completions.create(
+                model="tngtech/deepseek-r1t-chimera:free",
+                messages=[
+                    {"role": "user", "content": "Hello, this is a test message."}
+                ]
+            )
+            logger.info(f"Успешное подключение к openrouter.ai. Тестовый ответ: {test_completion.choices[0].message.content}")
+
             # Инициализация Telegram бота
             self.application = ApplicationBuilder() \
                 .token(os.getenv("TELEGRAM_BOT_TOKEN")) \
@@ -449,15 +460,11 @@ class BotManager:
             logger.info(
                 f"Отправка запроса в openrouter.ai (модель: tngtech/deepseek-r1t-chimera:free, чат: {chat_id}): {text}"
             )
-            completion = await self.openai_client.chat.completions.create(
+            completion = await self.openrouter_client.chat.completions.create(
                 model="tngtech/deepseek-r1t-chimera:free",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1000,
-                extra_headers={
-                    "HTTP-Referer": "https://tezam.pro",  # Ваш сайт для рейтинга
-                    "X-Title": "Tezam",  # Название сайта для рейтинга
-                }
+                max_tokens=1000
             )
             
             response = completion.choices[0].message.content
