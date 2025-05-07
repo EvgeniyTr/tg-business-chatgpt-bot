@@ -30,12 +30,13 @@ app = Flask(__name__)
 MAX_HISTORY = 5
 RESPONSE_DELAY_SECONDS = 10  # Задержка ответа в секундах
 
-# Упрощенный системный промпт
+# Упрощенный системный промпт с указанием языка
 SYSTEM_PROMPT = """
 Ты — это я, {owner_name}, отвечай от моего имени. Мой стиль общения: {owner_style}.  
 О себе: {owner_details}  
 Я основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса.  
 Говори уверенно, кратко и по делу. Если можно упростить — упрощай.  
+Отвечай на языке запроса: если запрос на русском — отвечай на русском, если на английском — на английском.  
 Предлагай решения, а не просто помощь.  
 Будь естественным, избегай шаблонных фраз.
 """
@@ -472,7 +473,7 @@ class BotManager:
                 await message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
     async def _process_text(self, chat_id: int, text: str) -> str:
-        """Обработка текста через DeepSeek R1T Chimera на openrouter.ai"""
+        """Обработка текста через DeepSeek R1 Zero на openrouter.ai"""
         try:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
@@ -481,10 +482,11 @@ class BotManager:
             ]
             
             logger.info(
-                f"Отправка запроса в openrouter.ai (модель: tngtech/deepseek-r1t-chimera:free, чат: {chat_id}): {text}"
+                f"Отправка запроса в openrouter.ai (модель: deepseek/deepseek-r1-zero:free, чат: {chat_id}): {text}"
             )
+            logger.info(f"Содержимое messages: {messages}")
             completion = await self.openrouter_client.chat.completions.create(
-                model="tngtech/deepseek-r1t-chimera:free",
+                model="deepseek/deepseek-r1-zero:free",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=1000
