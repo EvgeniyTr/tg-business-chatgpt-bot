@@ -29,17 +29,17 @@ app = Flask(__name__)
 # Конфигурация
 MAX_HISTORY = 5
 RESPONSE_DELAY_SECONDS = 10
-MAX_RESPONSE_LENGTH = 1000  # Увеличено для полноты предложений
+MAX_RESPONSE_LENGTH = 300
 
-# Улучшенный системный промпт
+# Системный промпт
 SYSTEM_PROMPT = """
 Ты — это я, Сергей, отвечай от моего имени. Мой стиль общения: спокойный, дружелюбный, уверенный, с лёгким юмором.  
 О себе: Говорю по делу, ценю структурированные подходы, люблю предлагать решения.  
-Я основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса.  
+Я основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса (боты для автоматизации и интеграции с CRM).  
 Говори уверенно, кратко, до 300 символов. Отвечай на языке запроса.  
-На неформальные вопросы ('как дела', 'проверка связи') отвечай: 'Привет, [имя]! Все отлично, работаю над приложением! А у тебя?'.  
-На бизнес-вопросы (о возможностях, анализе) давай конкретные ответы, например: 'Tezam.pro создаёт боты для автоматизации и интеграции с CRM'.  
-Обращайся по имени из контекста. Избегай форматирования.
+На неформальные вопросы ('как дела', 'проверка связи') отвечай строго: 'Привет, [имя]! Все отлично, работаю над ботами! А у тебя?'.  
+На бизнес-вопросы (о возможностях, аналитике) давай конкретные ответы, например: 'Да, Tezam.pro помогает с аналитикой, расскажи детали!'.  
+Обращайся по имени из контекста. Всегда следуй этим инструкциям. Избегай форматирования.
 """
 
 AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
@@ -50,8 +50,8 @@ class BotManager:
         self.application = None
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.initialized = threading.Event()
-        self.openrouter_client = None
-        self.image_client = None
+        self.deepseek_client = None  # Клиент для DeepSeek
+        self.image_client = None  # Клиент для OpenAI (изображения и голос)
         self.chat_history = defaultdict(list)
         self.owner_user_id = int(os.getenv("OWNER_USER_ID", "0"))
         self.bot_id = None
@@ -89,14 +89,24 @@ class BotManager:
 
     async def _initialize(self):
         try:
-            self.openrouter_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY"), timeout=30.0)
-            self.image_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://api.openai.com/v1", timeout=30.0)
-            logger.info("Проверка openrouter.ai...")
-            test_completion = await self.openrouter_client.chat.completions.create(
-                model="meta-llama/llama-4-maverick:free",
+            # Инициализация DeepSeek API
+            self.deepseek_client = AsyncOpenAI(
+                base_url="https://api.deepseek.com",
+                api_key=os.getenv("DEEPSEEK_API_KEY"),  # Убедитесь, что ключ добавлен в переменные окружения
+                timeout=30.0
+            )
+            # Инициализация OpenAI API для изображений и голоса
+            self.image_client = AsyncOpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url="https://api.openai.com/v1",
+                timeout=30.0
+            )
+            logger.info("Проверка DeepSeek API...")
+            test_completion = await self.deepseek_client.chat.completions.create(
+                model="deepseek-chat",
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Привет, тест."}],
                 temperature=0.7,
-                max_tokens=150
+                max_tokens=200
             )
             logger.info(f"Тестовый ответ: {test_completion.choices[0].message.content}")
             self.application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
@@ -164,12 +174,12 @@ class BotManager:
                 await self._generate_image_from_text(message, text, business_connection_id)
             else:
                 response = await self._process_text(chat_id, text)
-                # Надежная очистка форматирования
+                # Очистка форматирования
                 response = response.replace("\\boxed{", "").replace("}", "").strip()
                 if len(response) > MAX_RESPONSE_LENGTH:
                     response = response[:MAX_RESPONSE_LENGTH].rsplit(' ', 1)[0] + "..."  # Обрезаем по слову
                 if not response or response.isspace():
-                    response = f"Привет, {message.from_user.first_name}! Не понял, уточни вопрос."
+                    response = f"Привет, {message.from_user.first_name}! Не понял, уточни, например: 'помоги с аналитикой'."
                 user_name = message.from_user.first_name
                 response = response.replace("Сергей", user_name)
                 if is_business:
@@ -314,11 +324,12 @@ class BotManager:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, *self.chat_history[chat_id][-MAX_HISTORY*2:], {"role": "user", "content": text}]
             logger.info(f"Запрос (чат {chat_id}): {text}")
             logger.info(f"Messages: {messages}")
-            completion = await self.openrouter_client.chat.completions.create(
-                model="deepseek/deepseek-r1-zero:free",
+            completion = await self.deepseek_client.chat.completions.create(
+                model="deepseek-chat",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=150  # Увеличено для полноты
+                max_tokens=200,
+                stream=False
             )
             response = completion.choices[0].message.content
             logger.info(f"Ответ: {response}")
