@@ -2,12 +2,9 @@ import os
 import asyncio
 import logging
 import threading
-import httpx
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from tempfile import NamedTemporaryFile
 from datetime import datetime, timezone
-
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -17,7 +14,7 @@ from telegram.ext import (
     CommandHandler,
 )
 from flask import Flask, request, jsonify
-import openai
+from openai import OpenAI, AsyncOpenAI
 
 # Настройка логгирования
 logging.basicConfig(
@@ -60,7 +57,8 @@ class BotManager:
         self.application = None
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.initialized = threading.Event()
-        self.openai_client = None
+        self.openai_client = None  # Для обработки текста через openrouter.ai
+        self.image_client = None   # Отдельный клиент для OpenAI (DALL-E)
         self.chat_history = defaultdict(list)
         self.owner_user_id = int(os.getenv("OWNER_USER_ID", "0"))  # Твой Telegram user_id
         self.bot_id = None  # Будет установлен в _initialize
@@ -111,10 +109,17 @@ class BotManager:
     async def _initialize(self):
         """Инициализация компонентов бота"""
         try:
-            # Инициализация OpenAI
-            self.openai_client = openai.AsyncOpenAI(
+            # Инициализация клиента для openrouter.ai (текстовая обработка)
+            self.openai_client = AsyncOpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=os.getenv("OPENROUTER_API_KEY"),
+                timeout=30.0
+            )
+            
+            # Инициализация клиента для OpenAI (генерация изображений)
+            self.image_client = AsyncOpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
-                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+                base_url="https://api.openai.com/v1",
                 timeout=30.0
             )
             
@@ -293,10 +298,10 @@ class BotManager:
             )
 
     async def _generate_and_send_image(self, message: Update, prompt: str, business_connection_id: str = None):
-        """Отправка сгенерированного изображения"""
+        """Отправка сгенерированного изображения через OpenAI"""
         try:
             logger.info(f"Генерация изображения с промптом: {prompt}")
-            response = await self.openai_client.images.generate(
+            response = await self.image_client.images.generate(
                 model="dall-e-3",
                 prompt=prompt[:1000],
                 size="1024x1024",
@@ -316,7 +321,7 @@ class BotManager:
             raise
 
     async def _create_image_prompt(self, text: str) -> str:
-        """Создание промпта для DALL-E через GPT"""
+        """Создание промпта для DALL-E через OpenAI"""
         try:
             logger.info(f"Создание промпта для DALL-E с текстом: {text}")
             messages = [{
@@ -327,7 +332,7 @@ class BotManager:
                 "content": text
             }]
             
-            completion = await self.openai_client.chat.completions.create(
+            completion = await self.image_client.chat.completions.create(
                 model="gpt-4-turbo-preview",
                 messages=messages,
                 temperature=0.7,
@@ -402,7 +407,7 @@ class BotManager:
                 logger.info(f"Голосовой файл загружен для чата {chat_id}, размер: {len(file_content)} байт")
                 
                 logger.info(f"Отправка голосового сообщения в Whisper для транскрипции (чат: {chat_id})")
-                transcript = await self.openai_client.audio.transcriptions.create(
+                transcript = await self.image_client.audio.transcriptions.create(
                     file=("voice.ogg", file_content, "audio/ogg"),
                     model="whisper-1",
                     response_format="text"
@@ -433,7 +438,7 @@ class BotManager:
             )
 
     async def _process_text(self, chat_id: int, text: str) -> str:
-        """Обработка текста через GPT с историей"""
+        """Обработка текста через DeepSeek R1T Chimera на openrouter.ai"""
         try:
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
@@ -442,21 +447,25 @@ class BotManager:
             ]
             
             logger.info(
-                f"Отправка запроса в OpenAI (модель: gpt-4-turbo-preview, чат: {chat_id}): {text}"
+                f"Отправка запроса в openrouter.ai (модель: tngtech/deepseek-r1t-chimera:free, чат: {chat_id}): {text}"
             )
             completion = await self.openai_client.chat.completions.create(
-                model="gpt-4-turbo-preview",
+                model="tngtech/deepseek-r1t-chimera:free",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1000
+                max_tokens=1000,
+                extra_headers={
+                    "HTTP-Referer": "https://tezam.pro",  # Ваш сайт для рейтинга
+                    "X-Title": "Tezam",  # Название сайта для рейтинга
+                }
             )
             
             response = completion.choices[0].message.content
-            logger.info(f"Получен ответ от OpenAI для чата {chat_id}: {response}")
+            logger.info(f"Получен ответ от openrouter.ai для чата {chat_id}: {response}")
             self._update_history(chat_id, text, response)
             return response
         except Exception as e:
-            logger.error(f"Ошибка обработки текста через OpenAI для чата {chat_id}: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки текста через openrouter.ai для чата {chat_id}: {str(e)}", exc_info=True)
             return "⚠️ Ошибка генерации ответа"
 
     def _update_history(self, chat_id: int, text: str, response: str):
