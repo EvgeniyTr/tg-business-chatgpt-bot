@@ -29,16 +29,17 @@ app = Flask(__name__)
 # Конфигурация
 MAX_HISTORY = 5
 RESPONSE_DELAY_SECONDS = 10
-MAX_RESPONSE_LENGTH = 150  # Уменьшили до 150 символов для краткости
+MAX_RESPONSE_LENGTH = 1000  # Увеличено для полноты предложений
 
 # Улучшенный системный промпт
 SYSTEM_PROMPT = """
 Ты — это я, Сергей, отвечай от моего имени. Мой стиль общения: спокойный, дружелюбный, уверенный, с лёгким юмором.  
 О себе: Говорю по делу, ценю структурированные подходы, люблю предлагать решения.  
 Я основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса.  
-Говори уверенно, кратко и по делу, держи ответы до 150 символов.  
-Отвечай на языке запроса. На неформальные вопросы (например, 'как дела' или 'проверка связи') отвечай дружелюбно, например: 'Все отлично, работаю над ботами! А у тебя?'.  
-Обращайся к пользователю по его имени (берешь из контекста). Фокус на бизнес-вопросах, но будь гибким для личных тем. Избегай форматирования и шаблонов.
+Говори уверенно, кратко, до 300 символов. Отвечай на языке запроса.  
+На неформальные вопросы ('как дела', 'проверка связи') отвечай: 'Привет, [имя]! Все отлично, работаю над ботами! А у тебя?'.  
+На бизнес-вопросы (о возможностях, анализе) давай конкретные ответы, например: 'Tezam.pro создаёт боты для автоматизации и интеграции с CRM'.  
+Обращайся по имени из контекста. Избегай форматирования.
 """
 
 AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
@@ -90,12 +91,12 @@ class BotManager:
         try:
             self.openrouter_client = AsyncOpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.getenv("OPENROUTER_API_KEY"), timeout=30.0)
             self.image_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://api.openai.com/v1", timeout=30.0)
-            logger.info("Проверка подключения к openrouter.ai...")
+            logger.info("Проверка openrouter.ai...")
             test_completion = await self.openrouter_client.chat.completions.create(
                 model="deepseek/deepseek-r1-zero:free",
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Привет, это тест."}],
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Привет, тест."}],
                 temperature=0.7,
-                max_tokens=200
+                max_tokens=150
             )
             logger.info(f"Тестовый ответ: {test_completion.choices[0].message.content}")
             self.application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
@@ -125,7 +126,7 @@ class BotManager:
                 await message.get_bot().send_message(chat_id=message.chat_id, text=text, business_connection_id=update.business_message.business_connection_id)
             else:
                 await message.reply_text(text)
-            logger.info(f"Ответ /start отправлен в чат {user.id}")
+            logger.info(f"Ответ /start в чат {user.id}")
         except Exception as e:
             logger.error(f"Ошибка /start: {str(e)}", exc_info=True)
 
@@ -147,9 +148,9 @@ class BotManager:
                 return
             logger.info(f"{'Бизнес-' if is_business else ''}Сообщение в чате {chat_id} от {user.id} ({user.username or user.first_name}): {text}")
             asyncio.create_task(self._delayed_message_processing(message, text, chat_id, is_business, business_connection_id))
-            logger.info(f"Задача обработки запущена для чата {chat_id}")
+            logger.info(f"Задача для чата {chat_id} запущена")
         except Exception as e:
-            logger.error(f"Ошибка обработки сообщения: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки: {str(e)}", exc_info=True)
             if is_business and business_connection_id:
                 await message.get_bot().send_message(chat_id=chat_id, text="⚠️ Ошибка", business_connection_id=business_connection_id)
             else:
@@ -163,19 +164,19 @@ class BotManager:
                 await self._generate_image_from_text(message, text, business_connection_id)
             else:
                 response = await self._process_text(chat_id, text)
-                # Очистка форматирования
+                # Надежная очистка форматирования
                 response = response.replace("\\boxed{", "").replace("}", "").strip()
                 if len(response) > MAX_RESPONSE_LENGTH:
-                    response = response[:MAX_RESPONSE_LENGTH] + "..."
-                if not response:
-                    response = "Извини, не понял. Попробуй ещё!"
+                    response = response[:MAX_RESPONSE_LENGTH].rsplit(' ', 1)[0] + "..."  # Обрезаем по слову
+                if not response or response.isspace():
+                    response = f"Привет, {message.from_user.first_name}! Не понял, уточни вопрос."
                 user_name = message.from_user.first_name
-                response = response.replace("Сергей", user_name)  # Заменяем "Сергей" на имя пользователя
+                response = response.replace("Сергей", user_name)
                 if is_business:
                     await message.get_bot().send_message(chat_id=chat_id, text=response, business_connection_id=business_connection_id)
                 else:
                     await message.reply_text(response)
-                logger.info(f"Ответ отправлен в чат {chat_id}: {response}")
+                logger.info(f"Ответ в чат {chat_id}: {response}")
         except Exception as e:
             logger.error(f"Ошибка обработки для чата {chat_id}: {str(e)}", exc_info=True)
             if is_business and business_connection_id:
@@ -193,12 +194,12 @@ class BotManager:
             message = update.message or update.business_message
             business_connection_id = update.business_message.business_connection_id if update.business_message else None
             await self._generate_and_send_image(message, prompt, business_connection_id)
-            logger.info(f"Изображение отправлено в чат {user.id}")
+            logger.info(f"Изображение в чат {user.id}")
         except Exception as e:
             logger.error(f"Ошибка генерации: {str(e)}", exc_info=True)
             await (update.message or update.business_message).get_bot().send_message(
                 chat_id=(update.message or update.business_message).chat_id,
-                text="⚠️ Укажи описание изображения",
+                text="⚠️ Укажи описание",
                 business_connection_id=update.business_message.business_connection_id if update.business_message else None
             )
 
@@ -207,12 +208,12 @@ class BotManager:
             prompt = await self._create_image_prompt(text)
             await self._generate_and_send_image(message, prompt, business_connection_id)
         except Exception as e:
-            logger.error(f"Ошибка генерации изображения: {str(e)}", exc_info=True)
-            await message.get_bot().send_message(chat_id=message.chat_id, text="⚠️ Ошибка создания изображения", business_connection_id=business_connection_id)
+            logger.error(f"Ошибка создания изображения: {str(e)}", exc_info=True)
+            await message.get_bot().send_message(chat_id=message.chat_id, text="⚠️ Ошибка изображения", business_connection_id=business_connection_id)
 
     async def _generate_and_send_image(self, message: Update, prompt: str, business_connection_id: str = None):
         try:
-            logger.info(f"Генерация изображения: {prompt}")
+            logger.info(f"Генерация: {prompt}")
             response = await self.image_client.images.generate(
                 model="dall-e-3",
                 prompt=prompt[:1000],
@@ -223,14 +224,14 @@ class BotManager:
                 await message.get_bot().send_photo(chat_id=message.chat_id, photo=response.data[0].url, business_connection_id=business_connection_id)
             else:
                 await message.reply_photo(response.data[0].url)
-            logger.info(f"Изображение отправлено в чат {message.chat_id}")
+            logger.info(f"Изображение в чат {message.chat_id}")
         except Exception as e:
-            logger.error(f"Ошибка отправки изображения: {str(e)}")
+            logger.error(f"Ошибка отправки: {str(e)}")
             raise
 
     async def _create_image_prompt(self, text: str) -> str:
         try:
-            logger.info(f"Создание промпта для DALL-E: {text}")
+            logger.info(f"Промпт для DALL-E: {text}")
             messages = [{"role": "system", "content": "Сгенерируй англоязычное описание для DALL-E"}, {"role": "user", "content": text}]
             completion = await self.image_client.chat.completions.create(
                 model="gpt-4-turbo-preview",
@@ -239,7 +240,7 @@ class BotManager:
                 max_tokens=500
             )
             prompt = completion.choices[0].message.content
-            logger.info(f"Промпт создан: {prompt}")
+            logger.info(f"Промпт: {prompt}")
             return prompt
         except Exception as e:
             logger.error(f"Ошибка промпта: {str(e)}")
@@ -258,13 +259,13 @@ class BotManager:
             user = update.effective_user
             chat_id = message.chat_id
             if user.id == self.owner_user_id or user.id == self.bot_id:
-                logger.info(f"Пропущено голосовое от владельца/бота (ID: {user.id}) в чате {chat_id}")
+                logger.info(f"Пропущено голосовое от {user.id} в чате {chat_id}")
                 return
             logger.info(f"{'Бизнес-' if is_business else ''}Голосовое в чате {chat_id} от {user.id}")
             asyncio.create_task(self._delayed_voice_processing(message, chat_id, is_business, business_connection_id))
-            logger.info(f"Задача голосового запущена для чата {chat_id}")
+            logger.info(f"Задача голосового для {chat_id}")
         except Exception as e:
-            logger.error(f"Ошибка обработки голосового: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка голосового: {str(e)}", exc_info=True)
             if is_business and business_connection_id:
                 await message.get_bot().send_message(chat_id=chat_id, text="⚠️ Ошибка голоса", business_connection_id=business_connection_id)
             else:
@@ -273,12 +274,12 @@ class BotManager:
     async def _delayed_voice_processing(self, message, chat_id: int, is_business: bool, business_connection_id: str = None):
         try:
             await asyncio.sleep(RESPONSE_DELAY_SECONDS)
-            logger.info(f"Обработка {'бизнес-' if is_business else ''}голосового для чата {chat_id}")
+            logger.info(f"Обработка {'бизнес-' if is_business else ''}голосового для {chat_id}")
             voice_file = await message.voice.get_file()
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(voice_file.file_path)
                 file_content = response.content
-                logger.info(f"Голосовой файл загружен: {len(file_content)} байт")
+                logger.info(f"Голосовой файл: {len(file_content)} байт")
                 transcript = await self.image_client.audio.transcriptions.create(
                     file=("voice.ogg", file_content, "audio/ogg"),
                     model="whisper-1",
@@ -291,18 +292,18 @@ class BotManager:
                     response = await self._process_text(chat_id, transcript)
                     response = response.replace("\\boxed{", "").replace("}", "").strip()
                     if len(response) > MAX_RESPONSE_LENGTH:
-                        response = response[:MAX_RESPONSE_LENGTH] + "..."
-                    if not response:
-                        response = "Извини, не понял голос. Попробуй ещё!"
+                        response = response[:MAX_RESPONSE_LENGTH].rsplit(' ', 1)[0] + "..."
+                    if not response or response.isspace():
+                        response = f"Привет, {message.from_user.first_name}! Не понял, уточни."
                     user_name = message.from_user.first_name
                     response = response.replace("Сергей", user_name)
                     if is_business:
                         await message.get_bot().send_message(chat_id=chat_id, text=response, business_connection_id=business_connection_id)
                     else:
                         await message.reply_text(response)
-                    logger.info(f"Ответ голосового отправлен: {response}")
+                    logger.info(f"Ответ голосового: {response}")
         except Exception as e:
-            logger.error(f"Ошибка голосового для чата {chat_id}: {str(e)}", exc_info=True)
+            logger.error(f"Ошибка голосового для {chat_id}: {str(e)}", exc_info=True)
             if is_business and business_connection_id:
                 await message.get_bot().send_message(chat_id=chat_id, text="⚠️ Ошибка голоса", business_connection_id=business_connection_id)
             else:
@@ -311,20 +312,20 @@ class BotManager:
     async def _process_text(self, chat_id: int, text: str) -> str:
         try:
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, *self.chat_history[chat_id][-MAX_HISTORY*2:], {"role": "user", "content": text}]
-            logger.info(f"Запрос в openrouter.ai (чат {chat_id}): {text}")
+            logger.info(f"Запрос (чат {chat_id}): {text}")
             logger.info(f"Messages: {messages}")
             completion = await self.openrouter_client.chat.completions.create(
                 model="deepseek/deepseek-r1-zero:free",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=100  # Уменьшили до 100 для краткости
+                max_tokens=150  # Увеличено для полноты
             )
             response = completion.choices[0].message.content
             logger.info(f"Ответ: {response}")
             self._update_history(chat_id, text, response)
             return response
         except Exception as e:
-            logger.error(f"Ошибка обработки текста (чат {chat_id}): {str(e)}", exc_info=True)
+            logger.error(f"Ошибка обработки (чат {chat_id}): {str(e)}", exc_info=True)
             return "⚠️ Ошибка"
 
     def _update_history(self, chat_id: int, text: str, response: str):
