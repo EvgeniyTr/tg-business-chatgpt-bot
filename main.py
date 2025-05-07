@@ -5,7 +5,6 @@ import threading
 import httpx
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -29,7 +28,7 @@ app = Flask(__name__)
 # Конфигурация
 MAX_HISTORY = 5
 RESPONSE_DELAY_SECONDS = 10
-# Убрано ограничение MAX_RESPONSE_LENGTH, теперь ответы не обрезаются
+MAX_MESSAGE_LENGTH = 4096  # Ограничение Telegram для текста в сообщении
 
 AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
 
@@ -39,8 +38,8 @@ class BotManager:
         self.application = None
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.initialized = threading.Event()
-        self.deepseek_client = None  # Клиент для DeepSeek
-        self.image_client = None  # Клиент для OpenAI (изображения и голос)
+        self.deepseek_client = None
+        self.image_client = None
         self.chat_history = defaultdict(list)
         self.owner_user_id = int(os.getenv("OWNER_USER_ID", "0"))
         self.bot_id = None
@@ -84,13 +83,11 @@ class BotManager:
 
     async def _initialize(self):
         try:
-            # Инициализация DeepSeek API
             self.deepseek_client = AsyncOpenAI(
                 base_url="https://api.deepseek.com",
                 api_key=os.getenv("DEEPSEEK_API_KEY"),
                 timeout=30.0
             )
-            # Инициализация OpenAI API для изображений и голоса
             self.image_client = AsyncOpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
                 base_url="https://api.openai.com/v1",
@@ -101,7 +98,7 @@ class BotManager:
                 model="deepseek-chat",
                 messages=[{"role": "system", "content": self._get_system_prompt()}, {"role": "user", "content": "Привет, тест."}],
                 temperature=0.7,
-                max_tokens=200
+                max_tokens=500  # Увеличено до 500
             )
             logger.info(f"Тестовый ответ: {test_completion.choices[0].message.content}")
             self.application = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
@@ -139,7 +136,7 @@ class BotManager:
 4. Не используй шаблонные фразы. Будь естественным.
 5. Если есть путь сделать лучше — предложи.
 6. Покажи, что я в теме, что у меня есть опыт и я делюсь им осознанно.
-7. Будь краток и сдержан.
+7. Будь краток и сдержан, но давай достаточно деталей для осмысленного ответа.
 """.format(**self.owner_info)
 
     async def _start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,10 +187,17 @@ class BotManager:
                 await self._generate_image_from_text(message, text, business_connection_id)
             else:
                 response = await self._process_text(chat_id, text)
-                # Очистка форматирования
                 response = response.replace("\\boxed{", "").replace("}", "").strip()
                 if not response or response.isspace():
                     response = f"Привет, {message.from_user.first_name}! Не понял, уточни, например: 'помоги с аналитикой'."
+                # Разбиение длинного ответа на части, если превышает лимит Telegram
+                while len(response) > MAX_MESSAGE_LENGTH:
+                    part = response[:MAX_MESSAGE_LENGTH]
+                    response = response[MAX_MESSAGE_LENGTH:]
+                    if is_business:
+                        await message.get_bot().send_message(chat_id=chat_id, text=part, business_connection_id=business_connection_id)
+                    else:
+                        await message.reply_text(part)
                 user_name = message.from_user.first_name
                 response = response.replace("Сергей", user_name)
                 if is_business:
@@ -340,7 +344,7 @@ class BotManager:
                 model="deepseek-chat",
                 messages=messages,
                 temperature=0.7,
-                max_tokens=200,
+                max_tokens=500,  # Увеличено для более длинных ответов
                 stream=False
             )
             response = completion.choices[0].message.content
