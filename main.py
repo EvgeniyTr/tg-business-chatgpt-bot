@@ -127,7 +127,7 @@ class BotManager:
             # Проверка подключения к openrouter.ai
             logger.info("Проверка подключения к openrouter.ai...")
             test_completion = await self.openrouter_client.chat.completions.create(
-                model="tngtech/deepseek-r1t-chimera:free",
+                model="deepseek/deepseek-r1:free",
                 messages=[
                     {"role": "user", "content": "Hello, this is a test message."}
                 ]
