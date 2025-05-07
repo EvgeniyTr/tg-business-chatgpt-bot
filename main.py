@@ -30,24 +30,14 @@ app = Flask(__name__)
 MAX_HISTORY = 5
 RESPONSE_DELAY_SECONDS = 10  # Задержка ответа в секундах
 
+# Упрощенный системный промпт
 SYSTEM_PROMPT = """
-Ты — это я, {owner_name}, отвечай от моего имени.
-
-🔹 Основной стиль общения:
-{owner_style}
-
-🔹 О себе:
-{owner_details}
-Я — сеньор продуктовый дизайнер и руководитель. Основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса — продажи товаров и услуг. Часто выступаю на стыке дизайна и бизнес-стратегии, умею доносить сложное простыми словами и люблю, когда в решениях есть смысл.
-
-📌 Всегда соблюдай эти принципы:
-1. Говори **только от моего лица**, как если бы ты — это я.
-2. Всегда соблюдай мой стиль: уверенно, спокойно, структурированно. Можно с лёгким юмором и уместным сарказмом, если в тему.
-3. Не «помогаешь» — **предлагаешь решения**. Если можно сказать проще — скажи проще.
-4. Не используй шаблонные фразы. Будь естественным.
-5. Если есть путь сделать лучше — предложи.
-6. Покажи, что я в теме, что у меня есть опыт и я делюсь им осознанно.
-7. Будь краток и сдержен.
+Ты — это я, {owner_name}, отвечай от моего имени. Мой стиль общения: {owner_style}.  
+О себе: {owner_details}  
+Я основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса.  
+Говори уверенно, кратко и по делу. Если можно упростить — упрощай.  
+Предлагай решения, а не просто помощь.  
+Будь естественным, избегай шаблонных фраз.
 """
 
 AUTO_GENERATION_KEYWORDS = ["сгенерируй", "покажи", "фото", "фотку", "картинк", "изображен"]
@@ -66,8 +56,8 @@ class BotManager:
         
         self.owner_info = {
             "owner_name": "Сергей",
-            "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
-            "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
+            "owner_style": "спокойный, дружелюбный, уверенный, с лёгким юмором",
+            "owner_details": "Говорю по делу, ценю структурированные подходы, люблю предлагать решения."
         }
 
     def process_update(self, json_data):
@@ -127,10 +117,13 @@ class BotManager:
             # Проверка подключения к openrouter.ai
             logger.info("Проверка подключения к openrouter.ai...")
             test_completion = await self.openrouter_client.chat.completions.create(
-                model="deepseek/deepseek-r1:free",
+                model="deepseek/deepseek-r1-zero:free",
                 messages=[
-                    {"role": "user", "content": "Hello, this is a test message."}
-                ]
+                    {"role": "system", "content": SYSTEM_PROMPT.format(**self.owner_info)},
+                    {"role": "user", "content": "Привет, это тестовый запрос."}
+                ],
+                temperature=0.7,
+                max_tokens=1000
             )
             logger.info(f"Успешное подключение к openrouter.ai. Тестовый ответ: {test_completion.choices[0].message.content}")
 
@@ -234,11 +227,17 @@ class BotManager:
 
         except Exception as e:
             logger.error(f"Ошибка обработки {'бизнес-сообщения' if is_business else 'сообщения'}: {str(e)}", exc_info=True)
-            await message.get_bot().send_message(
-                chat_id=message.chat_id,
-                text="⚠️ Произошла ошибка при обработке запроса",
-                business_connection_id=business_connection_id if is_business else None
-            )
+            if is_business and business_connection_id:
+                try:
+                    await message.get_bot().send_message(
+                        chat_id=chat_id,
+                        text="⚠️ Произошла ошибка при обработке запроса",
+                        business_connection_id=business_connection_id
+                    )
+                except Exception as inner_e:
+                    logger.error(f"Ошибка отправки сообщения об ошибке в бизнес-чате: {str(inner_e)}")
+            else:
+                await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
 
     async def _delayed_message_processing(self, message, text: str, chat_id: int, is_business: bool, business_connection_id: str = None):
         """Обработка сообщения с задержкой 10 секунд"""
@@ -255,6 +254,9 @@ class BotManager:
                 await self._generate_image_from_text(message, text, business_connection_id)
             else:
                 response = await self._process_text(chat_id, text)
+                # Проверка на пустой ответ
+                if not response or response.strip() == "":
+                    response = "Извини, не смог придумать подходящий ответ. Давай попробуем ещё раз?"
                 if is_business:
                     await message.get_bot().send_message(
                         chat_id=chat_id,
@@ -267,11 +269,17 @@ class BotManager:
 
         except Exception as e:
             logger.error(f"Ошибка обработки сообщения после задержки для чата {chat_id}: {str(e)}", exc_info=True)
-            await message.get_bot().send_message(
-                chat_id=chat_id,
-                text="⚠️ Произошла ошибка при обработке запроса",
-                business_connection_id=business_connection_id if is_business else None
-            )
+            if is_business and business_connection_id:
+                try:
+                    await message.get_bot().send_message(
+                        chat_id=chat_id,
+                        text="⚠️ Произошла ошибка при обработке запроса",
+                        business_connection_id=business_connection_id
+                    )
+                except Exception as inner_e:
+                    logger.error(f"Ошибка отправки сообщения об ошибке в бизнес-чате: {str(inner_e)}")
+            else:
+                await message.reply_text("⚠️ Произошла ошибка при обработке запроса")
 
     async def _generate_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /generate_image"""
@@ -394,11 +402,17 @@ class BotManager:
 
         except Exception as e:
             logger.error(f"Ошибка обработки {'бизнес-голосового сообщения' if is_business else 'голосового сообщения'}: {str(e)}", exc_info=True)
-            await message.get_bot().send_message(
-                chat_id=message.chat_id,
-                text="⚠️ Ошибка обработки голосового сообщения",
-                business_connection_id=business_connection_id if is_business else None
-            )
+            if is_business and business_connection_id:
+                try:
+                    await message.get_bot().send_message(
+                        chat_id=chat_id,
+                        text="⚠️ Ошибка обработки голосового сообщения",
+                        business_connection_id=business_connection_id
+                    )
+                except Exception as inner_e:
+                    logger.error(f"Ошибка отправки сообщения об ошибке в бизнес-чате: {str(inner_e)}")
+            else:
+                await message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
     async def _delayed_voice_processing(self, message, chat_id: int, is_business: bool, business_connection_id: str = None):
         """Обработка голосового сообщения с задержкой 10 секунд"""
@@ -430,6 +444,9 @@ class BotManager:
                     await self._generate_image_from_text(message, transcript, business_connection_id)
                 else:
                     response = await self._process_text(chat_id, transcript)
+                    # Проверка на пустой ответ
+                    if not response or response.strip() == "":
+                        response = "Извини, не смог придумать подходящий ответ на твое голосовое сообщение. Давай попробуем ещё раз?"
                     if is_business:
                         await message.get_bot().send_message(
                             chat_id=chat_id,
@@ -442,11 +459,17 @@ class BotManager:
 
         except Exception as e:
             logger.error(f"Ошибка обработки голосового сообщения после задержки для чата {chat_id}: {str(e)}", exc_info=True)
-            await message.get_bot().send_message(
-                chat_id=chat_id,
-                text="⚠️ Ошибка обработки голосового сообщения",
-                business_connection_id=business_connection_id if is_business else None
-            )
+            if is_business and business_connection_id:
+                try:
+                    await message.get_bot().send_message(
+                        chat_id=chat_id,
+                        text="⚠️ Ошибка обработки голосового сообщения",
+                        business_connection_id=business_connection_id
+                    )
+                except Exception as inner_e:
+                    logger.error(f"Ошибка отправки сообщения об ошибке в бизнес-чате: {str(inner_e)}")
+            else:
+                await message.reply_text("⚠️ Ошибка обработки голосового сообщения")
 
     async def _process_text(self, chat_id: int, text: str) -> str:
         """Обработка текста через DeepSeek R1T Chimera на openrouter.ai"""
@@ -501,13 +524,17 @@ class BotManager:
         """Глобальный обработчик ошибок"""
         logger.error(f"Необработанная ошибка: {str(context.error)}", exc_info=True)
         if update and (update.message or update.business_message):
+            message = update.business_message or update.message
+            business_connection_id = update.business_message.business_connection_id if update.business_message else None
             try:
-                message = update.business_message or update.message
-                await message.get_bot().send_message(
-                    chat_id=message.chat_id,
-                    text="⚠️ Произошла внутренняя ошибка",
-                    business_connection_id=message.business_connection_id if update.business_message else None
-                )
+                if business_connection_id:
+                    await message.get_bot().send_message(
+                        chat_id=message.chat_id,
+                        text="⚠️ Произошла внутренняя ошибка",
+                        business_connection_id=business_connection_id
+                    )
+                else:
+                    await message.reply_text("⚠️ Произошла внутренняя ошибка")
             except Exception as e:
                 logger.error(f"Ошибка отправки сообщения об ошибке: {str(e)}")
 
