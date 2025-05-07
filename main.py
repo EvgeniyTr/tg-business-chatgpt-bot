@@ -37,7 +37,7 @@ SYSTEM_PROMPT = """
 О себе: Говорю по делу, ценю структурированные подходы, люблю предлагать решения.  
 Я основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса.  
 Говори уверенно, кратко, до 300 символов. Отвечай на языке запроса.  
-На неформальные вопросы ('как дела', 'проверка связи') отвечай: 'Привет, [имя]! Все отлично, работаю над ботами! А у тебя?'.  
+На неформальные вопросы ('как дела', 'проверка связи') отвечай: 'Привет, [имя]! Все отлично, работаю над приложением! А у тебя?'.  
 На бизнес-вопросы (о возможностях, анализе) давай конкретные ответы, например: 'Tezam.pro создаёт боты для автоматизации и интеграции с CRM'.  
 Обращайся по имени из контекста. Избегай форматирования.
 """
@@ -93,7 +93,7 @@ class BotManager:
             self.image_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url="https://api.openai.com/v1", timeout=30.0)
             logger.info("Проверка openrouter.ai...")
             test_completion = await self.openrouter_client.chat.completions.create(
-                model="deepseek/deepseek-r1-zero:free",
+                model="tngtech/deepseek-r1t-chimera:free",
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "Привет, тест."}],
                 temperature=0.7,
                 max_tokens=150
