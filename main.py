@@ -38,7 +38,8 @@ class BotManager:
         self.application = None
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.initialized = threading.Event()
-        self.deepseek_client = None
+        # self.deepseek_client = None  # Отключено, DeepSeek больше не используется
+        self.openai_client = None  # Используем OpenAI вместо DeepSeek
         self.image_client = None
         self.chat_history = defaultdict(list)
         self.owner_user_id = int(os.getenv("OWNER_USER_ID", "0"))
@@ -46,8 +47,8 @@ class BotManager:
         
         self.owner_info = {
             "owner_name": "Сергей",
-            "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно — могу быть прямым.",
-            "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто предлагаю решения и иду на шаг вперёд. Готов делиться опытом и вовлекать других в процесс, если вижу в этом смысл."
+            "owner_style": "Спокойный, дружелюбный, уверенный в себе, использую лёгкий юмор и уместный сарказм, если нужно[...]",
+            "owner_details": "Предпочитаю говорить по делу, но умею развить мысль. Ценю структурированные подходы, часто п�[...]"
         }
         
     def process_update(self, json_data):
@@ -83,19 +84,20 @@ class BotManager:
 
     async def _initialize(self):
         try:
-            self.deepseek_client = AsyncOpenAI(
-                base_url="https://api.deepseek.com",
-                api_key=os.getenv("DEEPSEEK_API_KEY"),
-                timeout=30.0
-            )
-            self.image_client = AsyncOpenAI(
+            # self.deepseek_client = AsyncOpenAI(
+            #     base_url="https://api.deepseek.com",
+            #     api_key=os.getenv("DEEPSEEK_API_KEY"),
+            #     timeout=30.0
+            # )
+            self.openai_client = AsyncOpenAI(
                 api_key=os.getenv("OPENAI_API_KEY"),
                 base_url="https://api.openai.com/v1",
                 timeout=30.0
             )
-            logger.info("Проверка DeepSeek API...")
-            test_completion = await self.deepseek_client.chat.completions.create(
-                model="deepseek-chat",
+            self.image_client = self.openai_client  # Можно использовать тот же клиент для изображений
+            logger.info("Проверка OpenAI API...")
+            test_completion = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
                 messages=[{"role": "system", "content": self._get_system_prompt()}, {"role": "user", "content": "Привет, тест."}],
                 temperature=0.7,
                 max_tokens=500  # Увеличено до 500
@@ -127,11 +129,11 @@ class BotManager:
 
 🔹 О себе:
 {owner_details}
-Я — сеньор продуктовый дизайнер и руководитель. Основатель стартапа Tezam.pro, мы создаём Telegram-приложения для бизнеса — продажи товаров и услуг. Часто выступаю на стыке дизайна и бизнес-стратегии, умею доносить сложное простыми словами и люблю, когда в решениях есть смысл.
+Я — сеньор продуктовый дизайнер и руководитель. Основатель стартапа Tezam.pro, мы создаём Telegram-приложения для би�[...]
 
 📌 Всегда соблюдай эти принципы:
 1. Говори **только от моего лица**, как если бы ты — это я.
-2. Всегда соблюдай мой стиль: уверенно, спокойно, структурированно. Можно с лёгким юмором и уместным сарказмом, если в тему.
+2. Всегда соблюдай мой стиль: уверенно, спокойно, структурированно. Можно с лёгким юмором и уместным сарказмом[...]
 3. Не «помогаешь» — **предлагаю решения**. Если можно сказать проще — скажи проще.
 4. Не используй шаблонные фразы. Будь естественным.
 5. Если есть путь сделать лучше — предложи.
@@ -261,7 +263,7 @@ class BotManager:
         try:
             logger.info(f"Промпт для DALL-E: {text}")
             messages = [{"role": "system", "content": "Сгенерируй англоязычное описание для DALL-E"}, {"role": "user", "content": text}]
-            completion = await self.image_client.chat.completions.create(
+            completion = await self.openai_client.chat.completions.create(
                 model="gpt-4-turbo-preview",
                 messages=messages,
                 temperature=0.7,
@@ -340,8 +342,8 @@ class BotManager:
             messages = [{"role": "system", "content": self._get_system_prompt()}, *self.chat_history[chat_id][-MAX_HISTORY*2:], {"role": "user", "content": text}]
             logger.info(f"Запрос (чат {chat_id}): {text}")
             logger.info(f"Messages: {messages}")
-            completion = await self.deepseek_client.chat.completions.create(
-                model="deepseek-chat",
+            completion = await self.openai_client.chat.completions.create(
+                model="gpt-4-turbo-preview",
                 messages=messages,
                 temperature=0.7,
                 max_tokens=500,  # Увеличено для более длинных ответов
